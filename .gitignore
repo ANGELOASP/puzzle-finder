@@ -7,3 +7,6 @@ env/
 venv/
 .DS_Store
 *.log
+
+# Estado local da CLI do Supabase
+supabase/.temp/

@@ -3,19 +3,15 @@ insert into storage.buckets (id, name, public)
 values ('puzzle-images', 'puzzle-images', true)
 on conflict (id) do nothing;
 
--- Politica de acesso ao bucket
-do $$
-begin
-  if not exists (
-    select 1 from pg_policies 
-    where schemaname = 'storage' and tablename = 'objects' and policyname = 'Acesso publico puzzle-images'
-  ) then
-    create policy "Acesso publico puzzle-images"
-      on storage.objects for all
-      using ( bucket_id = 'puzzle-images' )
-      with check ( bucket_id = 'puzzle-images' );
-  end if;
-end $$;
+-- Politica de acesso ao bucket: o app so le (URL publica) e envia fotos novas.
+-- Sem UPDATE/DELETE, ninguem com a anon key consegue apagar ou trocar fotos de outros.
+drop policy if exists "Acesso publico puzzle-images" on storage.objects;
+drop policy if exists "Leitura publica puzzle-images" on storage.objects;
+drop policy if exists "Envio publico puzzle-images" on storage.objects;
+create policy "Leitura publica puzzle-images" on storage.objects
+  for select using ( bucket_id = 'puzzle-images' );
+create policy "Envio publico puzzle-images" on storage.objects
+  for insert with check ( bucket_id = 'puzzle-images' );
 
 -- 2. Tabela de Quebra-Cabecas
 create table if not exists public.puzzles (
@@ -41,17 +37,16 @@ create table if not exists public.found_pieces (
 alter table public.puzzles enable row level security;
 alter table public.found_pieces enable row level security;
 
-do $$
-begin
-  if not exists (
-    select 1 from pg_policies where schemaname = 'public' and tablename = 'puzzles' and policyname = 'Acesso publico puzzles'
-  ) then
-    create policy "Acesso publico puzzles" on public.puzzles for all using (true) with check (true);
-  end if;
+-- O app so lista e cadastra (quebra-cabecas e pecas encontradas): sem UPDATE/DELETE publicos.
+-- Rodar este arquivo de novo troca as politicas antigas "for all" pelas restritas.
+drop policy if exists "Acesso publico puzzles" on public.puzzles;
+drop policy if exists "Leitura publica puzzles" on public.puzzles;
+drop policy if exists "Cadastro publico puzzles" on public.puzzles;
+create policy "Leitura publica puzzles" on public.puzzles for select using (true);
+create policy "Cadastro publico puzzles" on public.puzzles for insert with check (true);
 
-  if not exists (
-    select 1 from pg_policies where schemaname = 'public' and tablename = 'found_pieces' and policyname = 'Acesso publico found_pieces'
-  ) then
-    create policy "Acesso publico found_pieces" on public.found_pieces for all using (true) with check (true);
-  end if;
-end $$;
+drop policy if exists "Acesso publico found_pieces" on public.found_pieces;
+drop policy if exists "Leitura publica found_pieces" on public.found_pieces;
+drop policy if exists "Registro publico found_pieces" on public.found_pieces;
+create policy "Leitura publica found_pieces" on public.found_pieces for select using (true);
+create policy "Registro publico found_pieces" on public.found_pieces for insert with check (true);

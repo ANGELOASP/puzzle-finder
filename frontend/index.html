@@ -2,460 +2,531 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>PuzzleFinder - Ache sua Peça</title>
-  
+  <meta name="description" content="Marque onde a peça falta e aponte a câmera para a mesa: o PuzzleFinder mostra qual peça encaixa e quanto girar.">
+
   <!-- PWA & Favicon Meta Tags -->
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
   <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-  <meta name="theme-color" content="#10b981">
+  <meta name="theme-color" content="#020617">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PuzzleFinder">
-  
-  <script src="https://cdn.tailwindcss.com"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Bricolage Grotesque"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
   <!-- Supabase JS Client Oficial -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  
+
   <style>
+    :root { color-scheme: dark; }
+    body { font-optical-sizing: auto; }
+
+    .icon {
+      width: 1.25rem;
+      height: 1.25rem;
+      flex-shrink: 0;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Mira de alta precisão marcada sobre a foto */
     .pin {
       position: absolute;
-      width: 28px;
-      height: 28px;
-      background: radial-gradient(circle, rgba(239, 68, 68, 0.95) 25%, rgba(185, 28, 28, 0.9) 100%);
-      border: 2px solid white;
+      width: 30px;
+      height: 30px;
       border-radius: 50%;
+      border: 2.5px solid #fff;
+      background: rgba(16, 185, 129, 0.35);
+      box-shadow: 0 0 0 2px rgba(2, 6, 23, 0.85), 0 0 16px rgba(16, 185, 129, 0.9);
       transform: translate(-50%, -50%);
-      box-shadow: 0 0 18px rgba(239, 68, 68, 0.95);
       pointer-events: none;
       z-index: 30;
-      animation: pulse-pin 1.5s infinite;
+      animation: pulse-pin 1.6s ease-in-out infinite;
     }
-    .pin::before {
+    .pin::before, .pin::after {
       content: '';
       position: absolute;
-      top: 50%;
-      left: -8px;
-      right: -8px;
-      height: 2px;
-      background: rgba(255, 255, 255, 0.95);
-      transform: translateY(-50%);
+      background: #fff;
+      box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.6);
     }
-    .pin::after {
-      content: '';
-      position: absolute;
-      left: 50%;
-      top: -8px;
-      bottom: -8px;
-      width: 2px;
-      background: rgba(255, 255, 255, 0.95);
-      transform: translateX(-50%);
-    }
+    .pin::before { top: 50%; left: -9px; right: -9px; height: 2px; transform: translateY(-50%); }
+    .pin::after { left: 50%; top: -9px; bottom: -9px; width: 2px; transform: translateX(-50%); }
     @keyframes pulse-pin {
       0%, 100% { transform: translate(-50%, -50%) scale(1); }
-      50% { transform: translate(-50%, -50%) scale(1.18); }
+      50% { transform: translate(-50%, -50%) scale(1.15); }
     }
     @keyframes scan {
-      0%, 100% { top: 8%; opacity: 0.8; }
+      0%, 100% { top: 8%; opacity: 0.7; }
       50% { top: 92%; opacity: 1; }
     }
-    img, button {
-      -webkit-tap-highlight-color: transparent;
-      user-select: none;
+    .scan-line { animation: scan 2.4s ease-in-out infinite; }
+
+    img, button { -webkit-tap-highlight-color: transparent; }
+    .viewport-surface { user-select: none; -webkit-user-select: none; }
+
+    dialog::backdrop { background: rgba(2, 6, 23, 0.8); backdrop-filter: blur(4px); }
+    dialog[open] { animation: dialog-in 160ms ease-out; }
+    @keyframes dialog-in { from { opacity: 0; transform: translateY(8px); } }
+    #scannerModal { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    #scannerModal[open] { animation: none; }
+
+    .toast-enter { animation: toast-in 180ms ease-out; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between selection:bg-emerald-500 selection:text-slate-950">
-  
-  <div class="max-w-5xl mx-auto w-full px-4 py-5 md:py-8">
-    
-    <!-- Topbar com Logo, Conexão Supabase e Botão de Instalar -->
-    <div class="flex items-center justify-between gap-2 mb-4">
-      <div class="flex items-center gap-2.5">
-        <img src="/logo.png" alt="PuzzleFinder Logo" class="w-8 h-8 object-contain drop-shadow">
-        <span class="font-bold text-lg text-emerald-400 tracking-wide">PuzzleFinder</span>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col antialiased selection:bg-emerald-400 selection:text-slate-950">
+
+  <!-- Ícones (traço único, 24×24) -->
+  <svg width="0" height="0" class="absolute" aria-hidden="true">
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/></symbol>
+    <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-switch" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/></symbol>
+    <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+    <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+  </svg>
+
+  <div class="max-w-5xl mx-auto w-full px-4 pb-10">
+
+    <!-- Topbar: logo, instalação e configurações -->
+    <header class="flex items-center justify-between gap-3 py-4">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <img src="/logo.png" alt="" class="w-8 h-8 object-contain">
+        <span class="font-extrabold text-lg tracking-tight">Puzzle<span class="text-emerald-400">Finder</span></span>
       </div>
 
       <div class="flex items-center gap-2">
-        <!-- Status Supabase -->
-        <button id="btnOpenSupabaseModal" class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 rounded-full text-xs font-medium transition active:scale-95">
-          <span class="text-emerald-400">⚡</span>
-          <span id="supabaseStatusLabel">Supabase Conectado 🟢</span>
-        </button>
-
         <!-- Botão de Instalar App (PWA) -->
-        <button id="btnInstall" class="hidden items-center gap-1.5 px-3.5 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-full text-xs font-semibold shadow-sm transition active:scale-95">
-          <span>📲</span>
-          <span>Instalar App</span>
+        <button id="btnInstall" class="hidden items-center gap-2 h-10 px-3.5 rounded-full bg-emerald-400/10 hover:bg-emerald-400/20 text-emerald-300 ring-1 ring-inset ring-emerald-400/30 text-sm font-semibold transition active:scale-95">
+          <svg class="icon w-4 h-4"><use href="#i-download"/></svg>
+          <span>Instalar</span>
         </button>
-        <span id="installedBadge" class="hidden items-center gap-1 text-xs text-emerald-400 font-medium bg-emerald-950/60 px-2.5 py-1 rounded-full border border-emerald-800">
-          ✅ Instalado
+        <span id="installedBadge" class="hidden items-center gap-1.5 h-10 px-3 text-sm text-emerald-300">
+          <svg class="icon w-4 h-4"><use href="#i-check"/></svg> Instalado
         </span>
-      </div>
-    </div>
 
-    <!-- Banner iOS -->
-    <div id="iosInstallBanner" class="hidden mb-4 p-3 bg-emerald-950/70 border border-emerald-500/30 rounded-xl text-xs text-emerald-200 flex items-center justify-between">
-      <div class="flex items-center gap-2.5">
-        <img src="/logo.png" class="w-6 h-6 object-contain">
-        <span>Para instalar no seu iPhone: toque no ícone <strong>Compartilhar (⎋)</strong> e escolha <strong>"Adicionar à Tela de Início"</strong>.</span>
-      </div>
-      <button onclick="document.getElementById('iosInstallBanner').remove()" class="text-slate-400 hover:text-white ml-2 text-sm">✕</button>
-    </div>
-
-    <!-- Card de Quebra-Cabeça Ativo / Supabase Storage -->
-    <div class="mb-6 p-4 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-lg">
-      <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div class="flex items-center gap-3 w-full sm:w-auto">
-          <span class="text-2xl">🧩</span>
-          <div class="flex-1">
-            <span class="text-[11px] text-slate-400 block font-medium">Quebra-Cabeça em Andamento:</span>
-            <select id="puzzleSelect" class="bg-slate-950 text-emerald-300 font-semibold text-sm px-3 py-1.5 rounded-lg border border-slate-700 w-full sm:w-64 focus:outline-none focus:border-emerald-500">
-              <option value="">(Carregando do Supabase...)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
-          <button id="btnNewPuzzle" class="flex-1 sm:flex-none px-3.5 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold transition active:scale-95">
-            + Novo Quebra-Cabeça
-          </button>
-        </div>
-      </div>
-
-      <!-- Barra de Progresso do Quebra-Cabeça Selecionado -->
-      <div id="puzzleProgressContainer" class="hidden mt-4 pt-3 border-t border-slate-800/80">
-        <div class="flex justify-between items-center text-xs mb-1.5">
-          <span class="text-slate-300 font-medium" id="puzzleProgressName">Castelo Medieval</span>
-          <span class="text-emerald-400 font-bold" id="puzzleProgressStats">0 / 1000 peças (0%)</span>
-        </div>
-        <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
-          <div id="puzzleProgressBar" class="bg-gradient-to-r from-emerald-500 to-cyan-400 h-2.5 rounded-full transition-all duration-500" style="width: 0%"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Header Principal -->
-    <header class="text-center mb-6">
-      <h1 class="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400">
-        Reconhecimento de Formato & Cor
-      </h1>
-      <p class="text-slate-400 text-xs md:text-sm mt-2 max-w-lg mx-auto">
-        Escaneie o tabuleiro montado para mapear o <strong>formato dos encaixes</strong> e use a <strong>câmera em tempo real</strong> para achar a peça!
-      </p>
-      
-      <!-- Status da Conexão em Nuvem -->
-      <div class="mt-3 flex items-center justify-center gap-2 text-xs text-slate-400">
-        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-        <span id="apiStatusText" class="text-emerald-400/90 font-medium">Motor de IA na Nuvem (Render)</span>
-        <button id="toggleApiConfig" class="text-slate-500 hover:text-slate-300 ml-1">⚙️</button>
-      </div>
-
-      <div id="apiConfigBox" class="hidden mt-3 max-w-sm mx-auto p-2 bg-slate-900 rounded-lg border border-slate-800">
-        <label for="apiUrl" class="text-[11px] text-slate-400 block mb-1">Endereço da API Backend:</label>
-        <input type="text" id="apiUrl" value="https://puzzle-finder-api.onrender.com" class="w-full bg-slate-800 text-slate-200 px-2 py-1 rounded border border-slate-700 text-xs text-center">
+        <!-- Configurações + status dos serviços -->
+        <button id="btnOpenSettings" aria-label="Configurações e status dos serviços" class="relative w-10 h-10 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300 ring-1 ring-inset ring-slate-800 transition active:scale-95">
+          <svg class="icon"><use href="#i-sliders"/></svg>
+          <span id="statusDot" class="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-slate-500 ring-2 ring-slate-950" title="Verificando serviços…"></span>
+        </button>
       </div>
     </header>
 
-    <!-- Grid com 3 Etapas Estratégicas -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-      
-      <!-- Passo 1: Tabuleiro Sendo Montado -->
-      <div class="bg-slate-900/95 border-2 border-emerald-500/50 p-4 rounded-2xl shadow-xl flex flex-col items-center relative overflow-hidden">
-        <div class="absolute top-2 right-2 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/40">
-          Formato do Buraco
-        </div>
-        <div class="w-full flex items-center justify-between mb-1">
-          <h2 class="font-bold text-sm text-emerald-400 flex items-center gap-1.5">
-            <span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-xs">1</span>
-            Tabuleiro Sendo Montado
-          </h2>
-        </div>
-        <p class="text-[11px] text-slate-400 text-left w-full mb-3">Foto da área montada. <strong>Toque no buraco</strong> da peça que falta!</p>
-        
-        <label class="w-full flex flex-col items-center justify-center border-2 border-dashed border-emerald-500/60 hover:border-emerald-400 active:border-emerald-300 rounded-xl p-3 cursor-pointer transition bg-emerald-950/20">
-          <span class="text-2xl mb-1">🧩</span>
-          <span class="text-xs text-emerald-200 font-semibold text-center">Fotografar Tabuleiro / Buraco</span>
-          <input type="file" id="boardInput" accept="image/*" capture="environment" class="hidden">
-        </label>
+    <!-- Banner iOS -->
+    <div id="iosInstallBanner" class="hidden mb-4 p-3 bg-slate-900 ring-1 ring-inset ring-slate-800 rounded-xl text-sm text-slate-300 flex items-start gap-3">
+      <svg class="icon text-emerald-400 mt-0.5"><use href="#i-share"/></svg>
+      <p class="flex-1">Para instalar no iPhone: toque em <strong class="text-slate-100">Compartilhar</strong> e depois em <strong class="text-slate-100">Adicionar à Tela de Início</strong>.</p>
+      <button id="btnCloseIosBanner" aria-label="Fechar aviso" class="-m-1.5 w-9 h-9 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800">
+        <svg class="icon w-4 h-4"><use href="#i-x"/></svg>
+      </button>
+    </div>
 
-        <!-- Viewport Interativo com Zoom e Pan do Tabuleiro -->
-        <div id="boardContainer" class="relative mt-3 hidden w-full rounded-xl border border-slate-700 bg-black overflow-hidden flex flex-col shadow-lg">
-          <!-- Barra de Ferramentas de Zoom & Coordenadas -->
-          <div class="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-slate-800 z-10 text-xs">
-            <div class="flex items-center gap-1.5">
-              <button id="btnBoardZoomIn" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold rounded text-sm active:scale-95 shadow">➕</button>
-              <button id="btnBoardZoomOut" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold rounded text-sm active:scale-95 shadow">➖</button>
-              <button id="btnBoardZoomReset" type="button" class="px-2 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded text-[11px] active:scale-95 shadow">Reset</button>
-              <span id="boardZoomBadge" class="text-[10px] text-slate-400 ml-1">100%</span>
-            </div>
-            <span id="boardCoordBadge" class="text-[10px] text-emerald-400 font-semibold bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-800/80 hidden">📍 Marcado</span>
-          </div>
+    <!-- Aviso de servidor acordando (plano gratuito do Render hiberna) -->
+    <div id="apiNotice" role="status" class="hidden mb-4 p-3 rounded-xl text-sm flex items-center gap-3 bg-amber-400/10 text-amber-200 ring-1 ring-inset ring-amber-400/25">
+      <span class="inline-block w-4 h-4 border-2 border-amber-300 border-t-transparent rounded-full animate-spin shrink-0"></span>
+      <span id="apiNoticeText">Acordando o servidor de análise… a primeira busca pode levar até 1 minuto.</span>
+    </div>
 
-          <!-- Área do Visor Interativo -->
-          <div id="boardViewport" class="relative w-full h-72 md:h-84 overflow-hidden cursor-crosshair touch-none select-none flex items-center justify-center bg-slate-950">
-            <div id="boardTransformLayer" class="relative inline-block origin-top-left">
-              <img id="boardPreview" class="block max-w-full max-h-72 md:max-h-84 object-contain pointer-events-none">
-              <!-- Pino de Alta Precisão com Mira Central -->
-              <div id="boardPin" class="pin hidden"></div>
-            </div>
-          </div>
-          <div class="px-2.5 py-1 bg-slate-950 text-[10px] text-slate-400 border-t border-slate-800 flex justify-between items-center">
-            <span>🔍 Arraste para mover • ➕ / ➖ para ampliar</span>
-            <span class="text-emerald-400 font-medium">Toque no buraco</span>
-          </div>
+    <!-- Abertura -->
+    <section class="mt-2 mb-6">
+      <h1 class="text-3xl md:text-5xl font-extrabold tracking-tight leading-[1.05]">Qual peça está faltando?</h1>
+      <p class="text-slate-400 text-[15px] md:text-lg mt-2 max-w-xl">Marque onde ela vai e aponte a câmera para as peças soltas. A gente mostra qual encaixa e quanto girar.</p>
+    </section>
+
+    <!-- Quebra-cabeça ativo + progresso -->
+    <section class="mb-8 p-4 bg-slate-900 ring-1 ring-inset ring-slate-800 rounded-2xl">
+      <div class="flex flex-col sm:flex-row sm:items-end gap-3">
+        <div class="flex-1 min-w-0">
+          <label for="puzzleSelect" class="text-xs font-medium text-slate-400 block mb-1.5">Quebra-cabeça em andamento</label>
+          <select id="puzzleSelect" class="w-full h-11 bg-slate-950 text-slate-100 font-semibold text-[15px] px-3 rounded-xl ring-1 ring-inset ring-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+            <option value="">Carregando…</option>
+          </select>
         </div>
-        <p id="boardHint" class="text-[11px] text-emerald-300 font-medium mt-2 hidden text-center">
-          👉 Toque na foto exatamente no buraco vazio!
-        </p>
+        <button id="btnNewPuzzle" class="h-11 px-4 flex items-center justify-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 text-sm font-semibold transition active:scale-95">
+          <svg class="icon w-4 h-4"><use href="#i-plus"/></svg>
+          Novo quebra-cabeça
+        </button>
       </div>
 
-      <!-- Passo 2: Imagem da Caixa (Cores e Textura) -->
-      <div class="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl shadow-xl flex flex-col items-center">
-        <div class="w-full flex items-center justify-between mb-1">
-          <h2 class="font-bold text-sm text-cyan-400 flex items-center gap-1.5">
-            <span class="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 flex items-center justify-center text-xs">2</span>
-            Imagem da Caixa
-          </h2>
-          <span id="boxSavedBadge" class="hidden text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-700">Salva no Supabase</span>
+      <!-- Barra de Progresso do Quebra-Cabeça Selecionado -->
+      <div id="puzzleProgressContainer" class="hidden mt-4 pt-4 border-t border-slate-800">
+        <div class="flex justify-between items-baseline gap-3 text-sm mb-2">
+          <span class="text-slate-300 font-medium truncate" id="puzzleProgressName"></span>
+          <span class="text-emerald-300 font-semibold tabular-nums shrink-0" id="puzzleProgressStats">0 / 1000</span>
         </div>
-        <p class="text-[11px] text-slate-400 text-left w-full mb-3">Arte de referência (carregada da nuvem ou avulsa).</p>
-        
-        <label id="boxUploadLabel" class="w-full flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-cyan-500 active:border-cyan-400 rounded-xl p-3 cursor-pointer transition bg-slate-950/40">
-          <span class="text-2xl mb-1">🖼️</span>
-          <span class="text-xs text-slate-200 font-medium text-center">Foto da Imagem da Caixa</span>
-          <input type="file" id="boxInput" accept="image/*" class="hidden">
-        </label>
-
-        <!-- Viewport Interativo com Zoom e Pan da Caixa -->
-        <div id="boxContainer" class="relative mt-3 hidden w-full rounded-xl border border-slate-700 bg-black overflow-hidden flex flex-col shadow-lg">
-          <!-- Barra de Ferramentas de Zoom & Coordenadas -->
-          <div class="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-slate-800 z-10 text-xs">
-            <div class="flex items-center gap-1.5">
-              <button id="btnBoxZoomIn" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold rounded text-sm active:scale-95 shadow">➕</button>
-              <button id="btnBoxZoomOut" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold rounded text-sm active:scale-95 shadow">➖</button>
-              <button id="btnBoxZoomReset" type="button" class="px-2 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded text-[11px] active:scale-95 shadow">Reset</button>
-              <span id="boxZoomBadge" class="text-[10px] text-slate-400 ml-1">100%</span>
-            </div>
-            <span id="boxCoordBadge" class="text-[10px] text-cyan-400 font-semibold bg-cyan-950/80 px-2 py-0.5 rounded-full border border-cyan-800/80 hidden">🎯 Marcado</span>
-          </div>
-
-          <!-- Área do Visor Interativo -->
-          <div id="boxViewport" class="relative w-full h-72 md:h-84 overflow-hidden cursor-crosshair touch-none select-none flex items-center justify-center bg-slate-950">
-            <div id="boxTransformLayer" class="relative inline-block origin-top-left">
-              <img id="boxPreview" class="block max-w-full max-h-72 md:max-h-84 object-contain pointer-events-none">
-              <!-- Pino de Alta Precisão com Mira Central -->
-              <div id="targetPin" class="pin hidden"></div>
-            </div>
-          </div>
-          <div class="px-2.5 py-1 bg-slate-950 text-[10px] text-slate-400 border-t border-slate-800 flex justify-between items-center">
-            <span>🔍 Arraste para mover • ➕ / ➖ para ampliar</span>
-            <span class="text-cyan-400 font-medium">Toque no ponto da caixa</span>
-          </div>
+        <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden" role="progressbar" aria-labelledby="puzzleProgressName" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="puzzleProgressTrack">
+          <div id="puzzleProgressBar" class="bg-emerald-400 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
         </div>
-        <p id="boxHint" class="text-[11px] text-cyan-300 font-medium mt-2 hidden text-center">
-          🎯 Toque no ponto correspondente na caixa
-        </p>
+      </div>
+    </section>
+
+    <!-- Etapa 1: onde a peça vai -->
+    <section aria-labelledby="step1Title" class="mb-8">
+      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
+        <h2 id="step1Title" class="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2.5">
+          <span class="w-7 h-7 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center text-sm font-extrabold">1</span>
+          Marque onde a peça vai
+        </h2>
+        <span class="text-sm text-slate-400">no tabuleiro, na caixa ou nos dois</span>
       </div>
 
-      <!-- Passo 3: Peças na Mesa (Com Opção de Scanner em Tempo Real) -->
-      <div class="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl shadow-xl flex flex-col items-center justify-between">
-        <div class="w-full">
-          <div class="w-full flex items-center justify-between mb-1">
-            <h2 class="font-bold text-sm text-teal-400 flex items-center gap-1.5">
-              <span class="w-5 h-5 rounded-full bg-teal-500/20 text-teal-300 flex items-center justify-center text-xs">3</span>
-              Peças Soltas na Mesa
-            </h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+        <!-- Tabuleiro sendo montado -->
+        <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
+          <div class="flex items-start justify-between gap-3 mb-1">
+            <h3 class="font-bold text-base">Buraco no tabuleiro</h3>
+            <span id="boardCoordBadge" class="hidden shrink-0 items-center gap-1 text-xs font-semibold text-emerald-300 bg-emerald-400/10 px-2 py-1 rounded-full">
+              <svg class="icon w-3.5 h-3.5"><use href="#i-check"/></svg> Marcado
+            </span>
           </div>
-          <p class="text-[11px] text-slate-400 text-left w-full mb-3">Escolha como buscar as peças espalhadas:</p>
-          
-          <!-- Botão Scanner em Tempo Real (AR) -->
-          <button id="btnOpenRealtimeScanner" class="w-full mb-2.5 py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition active:scale-95">
-            <span class="text-base animate-pulse">🎥</span>
-            <span>Scanner em Tempo Real (Câmera AR)</span>
+          <p class="text-sm text-slate-400 mb-3">Fotografe a área montada e toque no buraco. O formato do encaixe ajuda a achar a peça.</p>
+
+          <label id="boardUploadLabel" class="w-full min-h-[88px] flex items-center justify-center gap-3 rounded-xl px-4 py-4 cursor-pointer transition bg-slate-950 ring-1 ring-inset ring-slate-700 border-dashed hover:ring-emerald-400/60 focus-within:ring-2 focus-within:ring-emerald-400 text-slate-200">
+            <svg class="icon w-6 h-6 text-emerald-400"><use href="#i-camera"/></svg>
+            <span class="text-sm font-semibold" id="boardUploadText">Fotografar tabuleiro</span>
+            <input type="file" id="boardInput" accept="image/*" capture="environment" class="sr-only">
+          </label>
+
+          <!-- Viewport Interativo com Zoom e Pan do Tabuleiro -->
+          <div id="boardContainer" class="hidden mt-3 w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
+              <div class="flex items-center gap-1">
+                <button id="btnBoardZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+                <button id="btnBoardZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+                <button id="btnBoardZoomReset" type="button" aria-label="Enquadrar foto inteira" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
+                <span id="boardZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
+              </div>
+              <label class="h-10 px-3 flex items-center gap-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800 cursor-pointer focus-within:ring-2 focus-within:ring-emerald-400">
+                <svg class="icon w-4 h-4"><use href="#i-camera"/></svg> Trocar foto
+                <input type="file" id="boardInputReplace" accept="image/*" capture="environment" class="sr-only">
+              </label>
+            </div>
+
+            <div id="boardViewport" class="viewport-surface relative w-full h-72 md:h-80 overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
+              <div id="boardTransformLayer" class="relative inline-block origin-top-left">
+                <img id="boardPreview" alt="Foto do tabuleiro montado" class="block max-w-full max-h-72 md:max-h-80 object-contain pointer-events-none">
+                <div id="boardPin" class="pin hidden"></div>
+              </div>
+            </div>
+            <p id="boardHint" class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Toque no buraco. Arraste para mover, use a roda do mouse ou os botões para ampliar.</p>
+          </div>
+        </article>
+
+        <!-- Imagem da caixa -->
+        <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
+          <div class="flex items-start justify-between gap-3 mb-1">
+            <h3 class="font-bold text-base">Ponto na imagem da caixa</h3>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span id="boxSavedBadge" class="hidden text-xs font-medium text-slate-300 bg-slate-800 px-2 py-1 rounded-full">Do quebra-cabeça</span>
+              <span id="boxCoordBadge" class="hidden items-center gap-1 text-xs font-semibold text-emerald-300 bg-emerald-400/10 px-2 py-1 rounded-full">
+                <svg class="icon w-3.5 h-3.5"><use href="#i-check"/></svg> Marcado
+              </span>
+            </div>
+          </div>
+          <p class="text-sm text-slate-400 mb-3">Toque no ponto da arte onde a peça fica. As cores e o desenho dali guiam a busca.</p>
+
+          <label id="boxUploadLabel" class="w-full min-h-[88px] flex items-center justify-center gap-3 rounded-xl px-4 py-4 cursor-pointer transition bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-emerald-400/60 focus-within:ring-2 focus-within:ring-emerald-400 text-slate-200">
+            <svg class="icon w-6 h-6 text-emerald-400"><use href="#i-image"/></svg>
+            <span class="text-sm font-semibold">Escolher foto da caixa</span>
+            <input type="file" id="boxInput" accept="image/*" class="sr-only">
+          </label>
+
+          <!-- Viewport Interativo com Zoom e Pan da Caixa -->
+          <div id="boxContainer" class="hidden mt-3 w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
+            <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
+              <div class="flex items-center gap-1">
+                <button id="btnBoxZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+                <button id="btnBoxZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+                <button id="btnBoxZoomReset" type="button" aria-label="Enquadrar foto inteira" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
+                <span id="boxZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
+              </div>
+              <label id="boxReplaceLabel" class="h-10 px-3 flex items-center gap-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800 cursor-pointer focus-within:ring-2 focus-within:ring-emerald-400">
+                <svg class="icon w-4 h-4"><use href="#i-image"/></svg> Trocar foto
+                <input type="file" id="boxInputReplace" accept="image/*" class="sr-only">
+              </label>
+            </div>
+
+            <div id="boxViewport" class="viewport-surface relative w-full h-72 md:h-80 overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
+              <div id="boxTransformLayer" class="relative inline-block origin-top-left">
+                <img id="boxPreview" alt="Imagem da caixa do quebra-cabeça" class="block max-w-full max-h-72 md:max-h-80 object-contain pointer-events-none">
+                <div id="targetPin" class="pin hidden"></div>
+              </div>
+            </div>
+            <p id="boxHint" class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Toque no ponto da arte. Amplie para marcar com precisão.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Etapa 2: procurar na mesa -->
+    <section aria-labelledby="step2Title" class="mb-8">
+      <h2 id="step2Title" class="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2.5 mb-3">
+        <span class="w-7 h-7 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center text-sm font-extrabold">2</span>
+        Procure nas peças soltas
+      </h2>
+
+      <div class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 md:p-5 rounded-2xl grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-5">
+        <div class="flex flex-col gap-3">
+          <!-- O que falta para buscar -->
+          <ul class="space-y-1.5 text-sm" aria-label="O que falta para buscar">
+            <li id="checkTarget" class="flex items-center gap-2 text-slate-400">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
+              <span>Marque o buraco ou um ponto na caixa</span>
+            </li>
+            <li class="flex items-center gap-2 text-slate-400" id="checkTable">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
+              <span>Câmera ao vivo ou foto da mesa</span>
+            </li>
+          </ul>
+
+          <!-- Scanner em tempo real -->
+          <button id="btnOpenRealtimeScanner" class="w-full h-14 px-4 flex items-center justify-center gap-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-base transition active:scale-[0.98] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed">
+            <svg class="icon"><use href="#i-scan"/></svg>
+            Procurar com a câmera ao vivo
           </button>
 
-          <!-- Ou Foto Estática Tradicional -->
-          <label class="w-full flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 rounded-xl p-2 cursor-pointer transition bg-slate-950/40 text-slate-300 text-xs">
-            <span>📷</span>
-            <span>Tirar Foto Estática</span>
-            <input type="file" id="tableInput" accept="image/*" capture="environment" class="hidden">
-          </label>
+          <div class="flex items-center gap-3 text-xs text-slate-500 uppercase tracking-wider">
+            <span class="h-px flex-1 bg-slate-800"></span>ou<span class="h-px flex-1 bg-slate-800"></span>
+          </div>
+
+          <!-- Foto estática da mesa -->
+          <div class="grid grid-cols-2 gap-2">
+            <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200 transition">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-camera"/></svg>
+              <span id="tableInputText">Foto da mesa</span>
+              <input type="file" id="tableInput" accept="image/*" capture="environment" class="sr-only">
+            </label>
+            <button id="btnFind" disabled class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-100 hover:bg-white text-slate-950 text-sm font-bold transition active:scale-[0.98] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-search"/></svg>
+              Encontrar peça
+            </button>
+          </div>
+
+          <!-- Indicador de Carregamento -->
+          <div id="loading" class="hidden p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+            <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
+            <div>
+              <p class="text-sm font-medium text-slate-200" id="loadingText">Comparando formatos e cores…</p>
+              <p class="text-xs text-slate-400 mt-0.5" id="loadingSubtext">Isso leva alguns segundos.</p>
+            </div>
+          </div>
         </div>
 
         <!-- Preview da Mesa -->
-        <div id="tableContainer" class="mt-3 hidden overflow-hidden rounded-xl border border-slate-700 w-full flex justify-center bg-black">
-          <img id="tablePreview" class="max-h-48 w-auto object-contain">
+        <div id="tableContainer" class="hidden rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex items-center justify-center min-h-[12rem]">
+          <img id="tablePreview" alt="Foto das peças soltas na mesa" class="max-h-72 w-auto object-contain">
+        </div>
+        <div id="tablePlaceholder" class="hidden md:flex rounded-xl border border-dashed border-slate-800 items-center justify-center min-h-[12rem] p-6 text-center text-sm text-slate-500">
+          Espalhe as peças sobre um fundo liso, sem sobrepor, com boa luz.
         </div>
       </div>
-    </div>
-
-    <!-- Botão de Ação Manual -->
-    <div class="text-center mb-8">
-      <button id="btnFind" disabled class="w-full md:w-auto px-12 py-3.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-black text-base rounded-2xl shadow-xl shadow-emerald-500/10 transition duration-150">
-        🔍 Encontrar Peça pela Foto
-      </button>
-      
-      <!-- Indicador de Carregamento -->
-      <div id="loading" class="hidden mt-4 p-4 bg-slate-900 border border-slate-800 rounded-xl text-center">
-        <div class="inline-block w-6 h-6 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin mb-2"></div>
-        <p class="text-xs md:text-sm text-slate-200 font-medium">Extraindo geometria do buraco e casando contornos...</p>
-        <p class="text-[11px] text-slate-400 mt-0.5">Testando interlocking tabs, fêmeas e machos na nuvem.</p>
-      </div>
-    </div>
+    </section>
 
     <!-- Resultados -->
-    <div id="resultSection" class="hidden bg-slate-900 border border-emerald-500/50 p-5 md:p-6 rounded-2xl shadow-2xl mb-8">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xl md:text-2xl font-bold text-emerald-400 flex items-center gap-2">
-          🎯 Peça Localizada com Sucesso!
-        </h3>
-        <button id="btnConfirmFound" class="px-3 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold transition active:scale-95">
-          ✅ Registrar no Histórico
+    <section id="resultSection" aria-live="polite" class="hidden bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 md:p-6 rounded-2xl mb-8">
+      <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
+        <div>
+          <h3 id="resultTitle" class="text-2xl md:text-3xl font-extrabold tracking-tight">Peça encontrada</h3>
+          <p id="resultSubtitle" class="text-sm text-slate-400 mt-1">Está circulada na foto da mesa.</p>
+        </div>
+        <button id="btnConfirmFound" class="h-11 px-4 flex items-center justify-center gap-2 rounded-xl bg-emerald-400/10 hover:bg-emerald-400/20 text-emerald-300 ring-1 ring-inset ring-emerald-400/30 text-sm font-semibold transition active:scale-95 disabled:opacity-60 disabled:cursor-default shrink-0">
+          <svg class="icon w-[18px] h-[18px]"><use href="#i-check"/></svg>
+          <span id="btnConfirmFoundText">Encaixei! Registrar</span>
         </button>
       </div>
-      
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-5 items-center">
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <!-- Recorte e Informações da Peça -->
-        <div class="flex flex-col items-center bg-slate-950 p-4 rounded-xl border border-slate-800 gap-3">
-          <div class="text-center">
-            <span class="text-[11px] text-slate-400 block mb-1 font-medium">Peça Correta:</span>
-            <img id="pieceCrop" class="w-28 h-28 object-contain rounded-lg border border-slate-700 bg-slate-900 mx-auto">
+        <div class="flex flex-col gap-3">
+          <div class="p-4 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-4">
+            <img id="pieceCrop" alt="Recorte da peça encontrada" class="w-24 h-24 object-contain rounded-lg bg-slate-900">
+            <div class="min-w-0">
+              <span class="text-xs text-slate-400 block">Como encaixar</span>
+              <p id="rotationTag" class="font-bold text-lg leading-tight mt-0.5 flex items-center gap-2"></p>
+            </div>
           </div>
 
           <!-- Diagnóstico de Formato do Buraco -->
-          <div id="slotRoiContainer" class="hidden text-center border-t border-slate-800/80 pt-2 w-full">
-            <span class="text-[10px] text-emerald-300 block mb-1 font-semibold">Buraco Detectado:</span>
-            <img id="slotRoiImg" class="w-24 h-24 object-contain rounded-lg border border-emerald-500/40 bg-black mx-auto">
-            <span id="shapeMatchTag" class="mt-1.5 inline-block text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-700"></span>
-          </div>
-
-          <div class="text-center">
-            <span id="rotationTag" class="px-3 py-1 bg-emerald-500/20 text-emerald-400 font-bold text-xs rounded-full border border-emerald-500/30"></span>
+          <div id="slotRoiContainer" class="hidden p-4 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-4">
+            <img id="slotRoiImg" alt="Contorno do buraco detectado no tabuleiro" class="w-24 h-24 object-contain rounded-lg bg-black">
+            <div class="min-w-0">
+              <span class="text-xs text-slate-400 block">Buraco detectado</span>
+              <p id="shapeMatchTag" class="font-semibold text-sm mt-0.5"></p>
+            </div>
           </div>
         </div>
 
         <!-- Mesa com Destaque -->
-        <div class="md:col-span-2">
-          <span class="text-[11px] text-slate-400 mb-2 block font-medium">Onde ela está na sua mesa (circulada em verde):</span>
-          <div class="overflow-hidden rounded-xl border border-slate-700 bg-black flex justify-center">
-            <img id="highlightedTable" class="w-full max-h-96 object-contain">
-          </div>
+        <div class="md:col-span-2 rounded-xl ring-1 ring-inset ring-slate-800 bg-black overflow-hidden flex justify-center">
+          <img id="highlightedTable" alt="Foto da mesa com a peça encontrada circulada" class="w-full max-h-[28rem] object-contain">
         </div>
       </div>
-    </div>
+    </section>
 
   </div>
+
+  <!-- Avisos rápidos (substituem alert) -->
+  <div id="toastRegion" aria-live="polite" class="fixed inset-x-0 bottom-0 z-[60] flex flex-col items-center gap-2 p-4 pointer-events-none" style="padding-bottom: max(1rem, env(safe-area-inset-bottom));"></div>
 
   <!-- MODAL: SCANNER DE CÂMERA EM TEMPO REAL (AR) -->
-  <div id="scannerModal" class="fixed inset-0 bg-black/95 z-50 hidden flex flex-col justify-between p-3 md:p-5">
-    <!-- Header do Scanner -->
-    <div class="flex items-center justify-between text-slate-100 z-20">
-      <div class="flex items-center gap-2">
-        <span class="w-3 h-3 rounded-full bg-emerald-500 animate-ping"></span>
-        <span class="text-xs md:text-sm font-bold text-emerald-400">Scanner AR em Tempo Real</span>
+  <dialog id="scannerModal" aria-labelledby="scannerTitle" class="bg-black text-slate-100 p-0">
+    <div class="h-full flex flex-col p-3 md:p-5 gap-3" style="padding-top: max(0.75rem, env(safe-area-inset-top)); padding-bottom: max(0.75rem, env(safe-area-inset-bottom));">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="scannerLiveDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <h2 id="scannerTitle" class="text-sm md:text-base font-bold">Câmera ao vivo</h2>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btnSwitchCamera" aria-label="Alternar câmera" class="w-11 h-11 flex items-center justify-center rounded-full bg-slate-800/90 text-slate-100 hover:bg-slate-700">
+            <svg class="icon"><use href="#i-switch"/></svg>
+          </button>
+          <button id="btnCloseScanner" aria-label="Fechar câmera" class="w-11 h-11 flex items-center justify-center rounded-full bg-slate-100 text-slate-950 hover:bg-white">
+            <svg class="icon"><use href="#i-x"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="flex items-center gap-2">
-        <button id="btnSwitchCamera" class="px-3 py-1.5 rounded-full bg-slate-800/90 text-slate-200 border border-slate-700 text-xs font-bold">🔄 Inverter</button>
-        <button id="btnCloseScanner" class="px-3.5 py-1.5 rounded-full bg-red-600/80 text-white border border-red-500 text-xs font-bold">✕ Fechar</button>
+
+      <!-- Visor de Vídeo e Canvas de Realidade Aumentada -->
+      <div class="relative flex-1 min-h-0 flex items-center justify-center overflow-hidden rounded-2xl bg-slate-950">
+        <video id="scannerVideo" autoplay playsinline muted class="w-full h-full object-contain"></video>
+        <canvas id="scannerOverlay" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+
+        <!-- Moldura e linha de varredura -->
+        <div id="scannerFrame" class="absolute inset-x-6 inset-y-10 rounded-2xl ring-1 ring-inset ring-white/20 pointer-events-none">
+          <div class="scan-line absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-300 to-transparent"></div>
+        </div>
+
+        <!-- Alerta Flutuante de Peça Travada na Mira -->
+        <div id="scannerLockAlert" class="absolute bottom-4 inset-x-4 hidden bg-emerald-400 text-slate-950 p-4 rounded-2xl shadow-2xl" role="alert">
+          <span class="text-lg font-extrabold block">Achei! É a peça circulada.</span>
+          <span id="scannerLockDetails" class="text-sm font-semibold block mt-0.5"></span>
+        </div>
       </div>
+
+      <!-- Barra de Status Inferior do Scanner -->
+      <p id="scannerStatusText" class="text-center text-sm text-slate-300 bg-slate-900/90 px-4 py-3 rounded-xl" aria-live="polite">Mova a câmera devagar sobre as peças espalhadas…</p>
     </div>
+  </dialog>
 
-    <!-- Visor de Vídeo e Canvas de Realidade Aumentada -->
-    <div class="relative flex-1 my-3 flex items-center justify-center overflow-hidden rounded-2xl border-2 border-emerald-500/40 bg-black">
-      <video id="scannerVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
-      <canvas id="scannerOverlay" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
-
-      <!-- Mira Holográfica e Linha Laser de Varredura -->
-      <div class="absolute inset-x-6 inset-y-10 border border-dashed border-emerald-500/30 rounded-2xl pointer-events-none flex items-center justify-center">
-        <div class="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10b981] animate-[scan_2s_ease-in-out_infinite]"></div>
-      </div>
-
-      <!-- Alerta Flutuante de Peça Travada na Mira -->
-      <div id="scannerLockAlert" class="absolute bottom-6 inset-x-6 hidden bg-emerald-500 text-slate-950 font-black p-4 rounded-xl text-center shadow-2xl">
-        <span class="text-lg block">🎯 PEÇA LOCALIZADA NA MESA!</span>
-        <span id="scannerLockDetails" class="text-xs font-bold block mt-0.5">Encaixe confirmado • Girar 90°</span>
-      </div>
-    </div>
-
-    <!-- Barra de Status Inferior do Scanner -->
-    <div class="text-center text-xs text-slate-300 z-20 bg-slate-900/90 p-3 rounded-xl border border-slate-800">
-      <p id="scannerStatusText" class="text-emerald-300 font-medium">Mova a câmera suavemente sobre as peças espalhadas na mesa...</p>
-    </div>
-  </div>
-
-  <!-- Modal: Conectar Supabase -->
-  <div id="supabaseModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
+  <!-- Modal: Configurações e status -->
+  <dialog id="settingsDialog" aria-labelledby="settingsTitle" class="bg-slate-900 text-slate-100 w-[calc(100%-2rem)] max-w-md rounded-2xl p-0 ring-1 ring-slate-800 shadow-2xl">
+    <form method="dialog" class="p-5 md:p-6" id="settingsForm">
       <div class="flex justify-between items-center mb-4">
-        <h3 class="font-bold text-lg text-emerald-400 flex items-center gap-2">
-          <span>⚡</span> Conectar ao Supabase
-        </h3>
-        <button id="btnCloseSupabaseModal" class="text-slate-400 hover:text-white">✕</button>
-      </div>
-      <p class="text-xs text-slate-400 mb-4">
-        As credenciais do seu projeto Supabase já foram configuradas automaticamente via CLI:
-      </p>
-
-      <div class="space-y-3 mb-6">
-        <div>
-          <label class="text-[11px] text-slate-400 block mb-1">Project URL:</label>
-          <input type="text" id="supabaseUrlInput" placeholder="https://xyzcompany.supabase.co" class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
-        </div>
-        <div>
-          <label class="text-[11px] text-slate-400 block mb-1">Anon / Public Key:</label>
-          <input type="password" id="supabaseKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
-        </div>
-      </div>
-
-      <div class="flex gap-2">
-        <button id="btnSaveSupabaseCreds" class="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition">
-          Salvar & Conectar
+        <h3 id="settingsTitle" class="font-bold text-lg">Configurações</h3>
+        <button value="cancel" formnovalidate aria-label="Fechar" class="-m-2 w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800">
+          <svg class="icon"><use href="#i-x"/></svg>
         </button>
       </div>
-    </div>
-  </div>
+
+      <div class="space-y-2 mb-5 text-sm">
+        <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800">
+          <span class="text-slate-300">Servidor de análise</span>
+          <span id="apiStatusText" class="flex items-center gap-2 font-medium text-slate-400"><span class="w-2 h-2 rounded-full bg-slate-500"></span>Verificando…</span>
+        </div>
+        <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800">
+          <span class="text-slate-300">Banco de dados</span>
+          <span id="supabaseStatusLabel" class="flex items-center gap-2 font-medium text-slate-400"><span class="w-2 h-2 rounded-full bg-slate-500"></span>Verificando…</span>
+        </div>
+      </div>
+
+      <details class="group">
+        <summary class="cursor-pointer text-sm font-semibold text-slate-300 hover:text-white select-none list-none flex items-center justify-between h-10">
+          Avançado
+          <svg class="icon w-4 h-4 transition group-open:rotate-45"><use href="#i-plus"/></svg>
+        </summary>
+        <div class="space-y-3 pt-2">
+          <div>
+            <label for="apiUrl" class="text-xs font-medium text-slate-400 block mb-1.5">Endereço da API de análise</label>
+            <input type="url" id="apiUrl" inputmode="url" autocomplete="off" spellcheck="false" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-sm px-3 rounded-xl">
+          </div>
+          <div>
+            <label for="supabaseUrlInput" class="text-xs font-medium text-slate-400 block mb-1.5">Supabase · Project URL</label>
+            <input type="url" id="supabaseUrlInput" placeholder="https://xyzcompany.supabase.co" autocomplete="off" spellcheck="false" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-sm px-3 rounded-xl">
+          </div>
+          <div>
+            <label for="supabaseKeyInput" class="text-xs font-medium text-slate-400 block mb-1.5">Supabase · Anon key</label>
+            <input type="password" id="supabaseKeyInput" autocomplete="off" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-sm px-3 rounded-xl">
+          </div>
+          <div class="flex gap-2 pt-1">
+            <button type="button" id="btnResetSettings" class="h-11 px-4 rounded-xl text-sm font-semibold text-slate-300 hover:bg-slate-800">Restaurar padrão</button>
+            <button type="button" id="btnSaveSettings" class="flex-1 h-11 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm transition">Salvar e reconectar</button>
+          </div>
+        </div>
+      </details>
+    </form>
+  </dialog>
 
   <!-- Modal: Novo Quebra-Cabeça -->
-  <div id="newPuzzleModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
+  <dialog id="newPuzzleModal" aria-labelledby="newPuzzleTitle" class="bg-slate-900 text-slate-100 w-[calc(100%-2rem)] max-w-md rounded-2xl p-0 ring-1 ring-slate-800 shadow-2xl">
+    <form id="newPuzzleForm" class="p-5 md:p-6">
       <div class="flex justify-between items-center mb-4">
-        <h3 class="font-bold text-lg text-emerald-400 flex items-center gap-2">
-          <span>🧩</span> Cadastrar Novo Quebra-Cabeça
-        </h3>
-        <button id="btnCloseNewPuzzleModal" class="text-slate-400 hover:text-white">✕</button>
-      </div>
-
-      <div class="space-y-3 mb-6">
-        <div>
-          <label class="text-[11px] text-slate-400 block mb-1">Nome do Quebra-Cabeça:</label>
-          <input type="text" id="newPuzzleName" placeholder="Ex: Castelo Medieval" class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
-        </div>
-        <div>
-          <label class="text-[11px] text-slate-400 block mb-1">Total de Peças:</label>
-          <input type="number" id="newPuzzleTotal" value="1000" class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
-        </div>
-        <div>
-          <label class="text-[11px] text-slate-400 block mb-1">Foto da Caixa (Salva na Nuvem):</label>
-          <input type="file" id="newPuzzleBoxFile" accept="image/*" class="w-full text-xs text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-slate-800 file:text-slate-200">
-        </div>
-      </div>
-
-      <div class="flex gap-2">
-        <button id="btnCreatePuzzleSubmit" class="w-full py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-400 hover:from-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition">
-          Salvar Quebra-Cabeça no Supabase
+        <h3 id="newPuzzleTitle" class="font-bold text-lg">Novo quebra-cabeça</h3>
+        <button type="button" id="btnCloseNewPuzzleModal" aria-label="Fechar" class="-m-2 w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800">
+          <svg class="icon"><use href="#i-x"/></svg>
         </button>
       </div>
-    </div>
-  </div>
 
-  <!-- Rodapé -->
-  <footer class="py-4 text-center text-[11px] text-slate-500 border-t border-slate-900">
-    PuzzleFinder • Câmera AR em Tempo Real • Banco de Dados Supabase • Motor de IA na Nuvem
-  </footer>
+      <div class="space-y-4 mb-6">
+        <div>
+          <label for="newPuzzleName" class="text-xs font-medium text-slate-400 block mb-1.5">Nome</label>
+          <input type="text" id="newPuzzleName" required maxlength="80" placeholder="Ex.: Castelo Medieval" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl">
+        </div>
+        <div>
+          <label for="newPuzzleTotal" class="text-xs font-medium text-slate-400 block mb-1.5">Total de peças</label>
+          <input type="number" id="newPuzzleTotal" required min="2" max="40000" step="1" value="1000" inputmode="numeric" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl">
+          <p class="text-xs text-slate-500 mt-1.5">Usado para estimar o tamanho de cada peça na imagem da caixa.</p>
+        </div>
+        <div>
+          <label for="newPuzzleBoxFile" class="text-xs font-medium text-slate-400 block mb-1.5">Foto da imagem da caixa</label>
+          <input type="file" id="newPuzzleBoxFile" required accept="image/*" class="w-full text-sm text-slate-400 file:mr-3 file:h-10 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-800 file:text-slate-100 hover:file:bg-slate-700">
+        </div>
+      </div>
+
+      <button type="submit" id="btnCreatePuzzleSubmit" class="w-full h-12 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm transition disabled:opacity-60 disabled:cursor-wait">
+        Salvar quebra-cabeça
+      </button>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

@@ -1,18 +1,29 @@
 import base64, cv2, numpy as np
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from puzzle_engine import PuzzleEngine
+
+# O frontend já comprime as fotos para ~1600 px (≈300 KB); 8 MB cobre fotos originais com folga
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 app = FastAPI(title="PuzzleFinder API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 engine = PuzzleEngine()
+
+async def read_upload(upload: Optional[UploadFile]) -> Optional[bytes]:
+    if upload is None:
+        return None
+    data = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Imagem muito grande (máx. 8 MB).")
+    return data or None
 
 def img_bytes_to_cv2(image_bytes: bytes):
     np_arr = np.frombuffer(image_bytes, np.uint8)
@@ -38,70 +49,76 @@ async def find_piece(
     target_x_ratio: Optional[float] = Form(None),
     target_y_ratio: Optional[float] = Form(None),
     board_x_ratio: Optional[float] = Form(None),
-    board_y_ratio: Optional[float] = Form(None)
+    board_y_ratio: Optional[float] = Form(None),
+    total_pieces: Optional[int] = Form(None),
+    annotate: bool = Form(True),
 ):
-    table_bgr = img_bytes_to_cv2(await table_file.read())
-    
+    table_bytes = await read_upload(table_file)
+    if table_bytes is None:
+        raise HTTPException(status_code=400, detail="Foto da mesa vazia.")
+    board_bytes = await read_upload(board_file)
+    box_bytes = await read_upload(box_file)
+
+    # OpenCV é CPU-bound: roda fora do event loop para não travar outras requisições
+    return await run_in_threadpool(
+        process_find_piece, table_bytes, box_bytes, board_bytes,
+        target_x_ratio, target_y_ratio, board_x_ratio, board_y_ratio, total_pieces, annotate,
+    )
+
+def process_find_piece(table_bytes, box_bytes, board_bytes,
+                       target_x_ratio, target_y_ratio, board_x_ratio, board_y_ratio,
+                       total_pieces, annotate):
+    table_bgr = img_bytes_to_cv2(table_bytes)
+
     # 1. Segmenta as peças soltas na mesa
     pieces = engine.segment_table_pieces(table_bgr)
     if not pieces:
-        raise HTTPException(status_code=404, detail="Nenhuma peça encontrada na foto da mesa. Use um fundo com bom contraste.")
+        raise HTTPException(status_code=404, detail="Nenhuma peça encontrada na foto da mesa. Espalhe as peças sobre um fundo liso.")
 
-    target_patch = None
+    box_patch = None
     slot_contour = None
     slot_roi_b64 = None
 
     # 2. Se o usuário enviou a foto do tabuleiro montado: extrai o formato do buraco
-    if board_file is not None:
-        board_bytes = await board_file.read()
-        if len(board_bytes) > 0:
-            board_bgr = img_bytes_to_cv2(board_bytes)
-            hb, wb = board_bgr.shape[:2]
-            
-            bx_ratio = board_x_ratio if board_x_ratio is not None else 0.5
-            by_ratio = board_y_ratio if board_y_ratio is not None else 0.5
-            
-            cx_board = int(bx_ratio * wb)
-            cy_board = int(by_ratio * hb)
-            
-            slot_contour, roi_vis = engine.extract_slot_from_board(board_bgr, cx_board, cy_board)
-            if roi_vis is not None:
-                slot_roi_b64 = cv2_to_base64_jpeg(roi_vis)
+    if board_bytes is not None and board_x_ratio is not None and board_y_ratio is not None:
+        board_bgr = img_bytes_to_cv2(board_bytes)
+        hb, wb = board_bgr.shape[:2]
+        slot_contour, roi_vis = engine.extract_slot_from_board(
+            board_bgr, int(board_x_ratio * wb), int(board_y_ratio * hb))
+        if roi_vis is not None and annotate:
+            slot_roi_b64 = cv2_to_base64_jpeg(roi_vis)
 
-    # 3. Se enviou a imagem da caixa: extrai o retalho de textura/cores correspondente
-    if box_file is not None:
-        box_bytes = await box_file.read()
-        if len(box_bytes) > 0:
-            box_bgr = img_bytes_to_cv2(box_bytes)
-            h_box, w_box = box_bgr.shape[:2]
-            
-            tx_ratio = target_x_ratio if target_x_ratio is not None else (board_x_ratio if board_x_ratio is not None else 0.5)
-            ty_ratio = target_y_ratio if target_y_ratio is not None else (board_y_ratio if board_y_ratio is not None else 0.5)
-            
-            cx = int(tx_ratio * w_box)
-            cy = int(ty_ratio * h_box)
-            patch_size = max(60, int(min(h_box, w_box) * 0.12))
-            half = patch_size // 2
+    # 3. Se enviou a imagem da caixa com o ponto marcado: recorta a região correspondente da arte
+    if box_bytes is not None and target_x_ratio is not None and target_y_ratio is not None:
+        box_bgr = img_bytes_to_cv2(box_bytes)
+        box_patch = engine.extract_box_patch(box_bgr, target_x_ratio, target_y_ratio, total_pieces)
 
-            target_patch = box_bgr[max(0, cy-half):min(h_box, cy+half), max(0, cx-half):min(w_box, cx+half)]
-
-    if target_patch is None and slot_contour is None:
-        raise HTTPException(status_code=400, detail="Por favor, envie a foto da Caixa ou a foto do Tabuleiro em montagem.")
+    if box_patch is None and slot_contour is None:
+        raise HTTPException(status_code=400, detail="Marque o buraco no tabuleiro ou o ponto na imagem da caixa.")
 
     # 4. Encontra a melhor peça combinando Formato das Bordas + Textura da Arte
-    best_piece, rotation, shape_sim = engine.match_target(target_patch, pieces, slot_contour=slot_contour)
-    if not best_piece:
-        raise HTTPException(status_code=404, detail="Não foi possível identificar com confiança a peça procurada.")
+    match = engine.match_target(box_patch, pieces, slot_contour=slot_contour)
+    if not match:
+        raise HTTPException(status_code=404, detail="Não foi possível identificar a peça procurada.")
 
-    annotated_table = engine.draw_highlight(table_bgr, best_piece, rotation, shape_sim=shape_sim)
-
-    return {
+    best_piece = match["piece"]
+    shape_sim = match["shape_similarity"]
+    result = {
         "piece_id": best_piece["id"],
-        "rotation_deg": rotation,
-        "shape_similarity": round(float(shape_sim) * 100, 1) if shape_sim else None,
+        "pieces_detected": len(pieces),
+        "rotation_deg": match["rotation"],
+        "confident": match["confident"],
+        "score": round(match["score"] * 100, 1),
+        "shape_similarity": round(shape_sim * 100, 1) if shape_sim else None,
         "centroid": best_piece["centroid"],
         "bbox": best_piece["bbox"],
-        "piece_crop_base64": cv2_to_base64_jpeg(best_piece["crop"]),
-        "annotated_table_base64": cv2_to_base64_jpeg(annotated_table),
-        "slot_roi_base64": slot_roi_b64
+        "frame_size": [table_bgr.shape[1], table_bgr.shape[0]],
     }
+    # O scanner em tempo real só precisa das coordenadas: pular as imagens economiza banda a cada quadro
+    if annotate:
+        annotated_table = engine.draw_highlight(
+            table_bgr, best_piece, match["rotation"], confident=match["confident"])
+        result["piece_crop_base64"] = cv2_to_base64_jpeg(best_piece["crop"])
+        result["annotated_table_base64"] = cv2_to_base64_jpeg(annotated_table)
+        result["slot_roi_base64"] = slot_roi_b64
+    return result
