@@ -1,4 +1,4 @@
-const CACHE_NAME = 'puzzlefinder-v2';
+const CACHE_NAME = 'puzzlefinder-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -36,14 +36,24 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Rede primeiro para os arquivos do app (cada deploy chega na hora); cache só quando offline.
+// Requisições de outros domínios (API, Supabase, CDNs) passam direto.
 self.addEventListener('fetch', (event) => {
-  if (event.request.url.includes('/api/')) {
+  const { request } = event;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) {
     return;
   }
-  
+
   event.respondWith(
-    caches.match(event.request).then((response) => {
-      return response || fetch(event.request);
-    })
+    fetch(request)
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request).then((cached) => cached || caches.match('/index.html')))
   );
 });
