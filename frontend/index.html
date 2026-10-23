@@ -122,9 +122,66 @@
     <symbol id="i-share" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/></symbol>
     <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
     <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
   </svg>
 
-  <div class="max-w-5xl mx-auto w-full px-4 pb-10">
+  <!-- TELA DE LOGIN (Supabase Auth) -->
+  <main id="authScreen" class="flex-1 flex items-center justify-center px-4 py-10">
+    <div class="w-full max-w-sm">
+      <div class="flex items-center gap-2.5 mb-8">
+        <img src="/logo.png" alt="" class="w-9 h-9 object-contain">
+        <span class="font-extrabold text-xl tracking-tight">Puzzle<span class="text-emerald-400">Finder</span></span>
+      </div>
+
+      <!-- Entrar -->
+      <form id="loginForm" class="hidden space-y-4" novalidate>
+        <div>
+          <h1 class="text-3xl font-extrabold tracking-tight">Entrar</h1>
+          <p class="text-sm text-slate-400 mt-1.5">Seus quebra-cabeças e o progresso ficam salvos na sua conta.</p>
+        </div>
+        <div>
+          <label for="loginEmail" class="text-xs font-medium text-slate-400 block mb-1.5">E-mail</label>
+          <input type="email" id="loginEmail" required autocomplete="username" inputmode="email" spellcheck="false" class="w-full h-12 bg-slate-900 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3.5 rounded-xl">
+        </div>
+        <div>
+          <label for="loginPassword" class="text-xs font-medium text-slate-400 block mb-1.5">Senha</label>
+          <div class="relative">
+            <input type="password" id="loginPassword" required autocomplete="current-password" class="w-full h-12 bg-slate-900 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] pl-3.5 pr-12 rounded-xl">
+            <button type="button" id="btnTogglePassword" aria-label="Mostrar senha" aria-pressed="false" class="absolute right-1 top-1 w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-white">
+              <svg class="icon"><use href="#i-eye"/></svg>
+            </button>
+          </div>
+        </div>
+        <p id="loginError" role="alert" class="hidden text-sm text-rose-300 bg-rose-500/10 ring-1 ring-inset ring-rose-500/30 rounded-xl px-3 py-2.5"></p>
+        <button type="submit" id="btnLogin" class="w-full h-12 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-60 disabled:cursor-wait">Entrar</button>
+        <div class="flex items-center justify-between gap-3 text-sm">
+          <button type="button" id="btnForgotPassword" class="h-10 -mx-1 px-1 font-semibold text-slate-300 hover:text-white">Esqueci minha senha</button>
+        </div>
+        <p class="text-xs text-slate-500 pt-2">Acesso por convite: quem administra o app cria a sua conta.</p>
+      </form>
+
+      <!-- Definir nova senha (link de recuperação do e-mail) -->
+      <form id="newPasswordForm" class="hidden space-y-4" novalidate>
+        <div>
+          <h1 class="text-3xl font-extrabold tracking-tight">Nova senha</h1>
+          <p class="text-sm text-slate-400 mt-1.5">Escolha uma senha com pelo menos 8 caracteres.</p>
+        </div>
+        <div>
+          <label for="newPassword" class="text-xs font-medium text-slate-400 block mb-1.5">Nova senha</label>
+          <input type="password" id="newPassword" required minlength="8" autocomplete="new-password" class="w-full h-12 bg-slate-900 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3.5 rounded-xl">
+        </div>
+        <p id="newPasswordError" role="alert" class="hidden text-sm text-rose-300 bg-rose-500/10 ring-1 ring-inset ring-rose-500/30 rounded-xl px-3 py-2.5"></p>
+        <button type="submit" id="btnSaveNewPassword" class="w-full h-12 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[15px] transition disabled:opacity-60 disabled:cursor-wait">Salvar e entrar</button>
+      </form>
+
+      <p id="authLoading" class="text-sm text-slate-400 flex items-center gap-2">
+        <span class="inline-block w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span> Verificando sessão…
+      </p>
+    </div>
+  </main>
+
+  <div id="appRoot" class="hidden max-w-5xl mx-auto w-full px-4 pb-10">
 
     <!-- Topbar: logo, instalação e configurações -->
     <header class="flex items-center justify-between gap-3 py-4">
@@ -455,6 +512,16 @@
         <h3 id="settingsTitle" class="font-bold text-lg">Configurações</h3>
         <button value="cancel" formnovalidate aria-label="Fechar" class="-m-2 w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800">
           <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800">
+        <div class="min-w-0">
+          <span class="text-xs text-slate-400 block">Conectado como</span>
+          <span id="accountEmail" class="text-sm font-semibold text-slate-100 block truncate"></span>
+        </div>
+        <button type="button" id="btnLogout" class="h-10 px-3 flex items-center gap-2 rounded-lg text-sm font-semibold text-slate-200 hover:bg-slate-800 shrink-0">
+          <svg class="icon w-4 h-4"><use href="#i-logout"/></svg> Sair
         </button>
       </div>
 
