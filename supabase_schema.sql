@@ -67,10 +67,11 @@ create policy "Dono gerencia found_pieces" on public.found_pieces
   using (user_id = (select auth.uid()))
   with check (
     user_id = (select auth.uid())
-    and exists (select 1 from public.puzzles p where p.id = puzzle_id and p.user_id = (select auth.uid()))
+    and exists (select 1 from public.puzzles p where p.id = found_pieces.puzzle_id and p.user_id = (select auth.uid()))
   );
 
 -- 5. Storage: grava na propria pasta; le a propria pasta ou fotos antigas dos proprios quebra-cabecas
+-- (storage.objects.name qualificado: puzzles tambem tem uma coluna "name")
 drop policy if exists "Acesso publico puzzle-images" on storage.objects;
 drop policy if exists "Leitura publica puzzle-images" on storage.objects;
 drop policy if exists "Envio publico puzzle-images" on storage.objects;
@@ -83,7 +84,7 @@ create policy "Dono le puzzle-images" on storage.objects
     bucket_id = 'puzzle-images'
     and (
       (storage.foldername(name))[1] = (select auth.uid())::text
-      or exists (select 1 from public.puzzles p where p.box_image_path = name and p.user_id = (select auth.uid()))
+      or exists (select 1 from public.puzzles p where p.box_image_path = storage.objects.name and p.user_id = (select auth.uid()))
     )
   );
 create policy "Dono envia puzzle-images" on storage.objects
