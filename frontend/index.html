@@ -1,0 +1,89 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PuzzleFinder - Ache sua Peça</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .pin {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      background: rgba(239, 68, 68, 0.9);
+      border: 3px solid white;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.9);
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-4xl mx-auto px-4 py-8">
+    <header class="text-center mb-8">
+      <h1 class="text-3xl md:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400">
+        🧩 PuzzleFinder
+      </h1>
+      <p class="text-slate-400 text-sm mt-2">Localizador inteligente de peças de quebra-cabeça</p>
+      <div class="mt-4 flex items-center justify-center gap-2 text-xs text-slate-400">
+        <label for="apiUrl">Backend API:</label>
+        <input type="text" id="apiUrl" value="http://localhost:8000" class="bg-slate-800 text-slate-200 px-2 py-1 rounded border border-slate-700 w-64 text-center">
+      </div>
+    </header>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl flex flex-col items-center">
+        <h2 class="font-bold text-lg text-emerald-400 mb-2">1. Imagem da Caixa (Gabarito)</h2>
+        <label class="w-full flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-4 cursor-pointer transition">
+          <span class="text-sm text-slate-300 font-medium">📷 Selecionar Foto da Caixa</span>
+          <input type="file" id="boxInput" accept="image/*" class="hidden">
+        </label>
+        <div id="boxContainer" class="relative mt-4 hidden overflow-hidden rounded-lg border border-slate-700 max-w-full">
+          <img id="boxPreview" class="max-h-72 w-auto object-contain cursor-crosshair">
+          <div id="targetPin" class="pin hidden"></div>
+        </div>
+        <p id="boxHint" class="text-xs text-emerald-300/80 mt-2 hidden">👉 Toque/clique onde precisa da peça!</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl flex flex-col items-center">
+        <h2 class="font-bold text-lg text-cyan-400 mb-2">2. Peças na Mesa</h2>
+        <label class="w-full flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-cyan-500 rounded-xl p-4 cursor-pointer transition">
+          <span class="text-sm text-slate-300 font-medium">📷 Tirar Foto da Mesa</span>
+          <input type="file" id="tableInput" accept="image/*" capture="environment" class="hidden">
+        </label>
+        <div id="tableContainer" class="mt-4 hidden overflow-hidden rounded-lg border border-slate-700 max-w-full">
+          <img id="tablePreview" class="max-h-72 w-auto object-contain">
+        </div>
+      </div>
+    </div>
+
+    <div class="text-center mb-10">
+      <button id="btnFind" disabled class="px-8 py-3 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-600 hover:to-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-base rounded-full shadow-lg transition">
+        🔍 Encontrar Peça na Mesa
+      </button>
+      <div id="loading" class="hidden mt-4 text-slate-300 text-sm animate-pulse">
+        ⏳ Analisando padrões visuais e calculando rotação de encaixe...
+      </div>
+    </div>
+
+    <div id="resultSection" class="hidden bg-slate-900 border border-emerald-500/50 p-6 rounded-2xl shadow-2xl">
+      <h3 class="text-2xl font-bold text-emerald-400 mb-4">🎯 Peça Localizada!</h3>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+        <div class="flex flex-col items-center bg-slate-950 p-4 rounded-xl border border-slate-800">
+          <span class="text-xs text-slate-400 mb-2">Peça Recortada:</span>
+          <img id="pieceCrop" class="w-32 h-32 object-contain rounded-lg border border-slate-700">
+          <div class="mt-3 text-center">
+            <span id="rotationTag" class="px-3 py-1 bg-emerald-500/20 text-emerald-400 font-bold text-xs rounded-full"></span>
+          </div>
+        </div>
+        <div class="md:col-span-2">
+          <span class="text-xs text-slate-400 mb-2 block">Onde está na mesa (círculo verde):</span>
+          <img id="highlightedTable" class="w-full object-contain rounded-xl border border-slate-700">
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
