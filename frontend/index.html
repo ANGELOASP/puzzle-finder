@@ -23,19 +23,40 @@
   <style>
     .pin {
       position: absolute;
-      width: 26px;
-      height: 26px;
-      background: radial-gradient(circle, #ef4444 40%, #b91c1c 100%);
-      border: 3px solid white;
+      width: 28px;
+      height: 28px;
+      background: radial-gradient(circle, rgba(239, 68, 68, 0.95) 25%, rgba(185, 28, 28, 0.9) 100%);
+      border: 2px solid white;
       border-radius: 50%;
       transform: translate(-50%, -50%);
-      box-shadow: 0 0 16px rgba(239, 68, 68, 0.95);
+      box-shadow: 0 0 18px rgba(239, 68, 68, 0.95);
       pointer-events: none;
+      z-index: 30;
       animation: pulse-pin 1.5s infinite;
+    }
+    .pin::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: -8px;
+      right: -8px;
+      height: 2px;
+      background: rgba(255, 255, 255, 0.95);
+      transform: translateY(-50%);
+    }
+    .pin::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: -8px;
+      bottom: -8px;
+      width: 2px;
+      background: rgba(255, 255, 255, 0.95);
+      transform: translateX(-50%);
     }
     @keyframes pulse-pin {
       0%, 100% { transform: translate(-50%, -50%) scale(1); }
-      50% { transform: translate(-50%, -50%) scale(1.15); }
+      50% { transform: translate(-50%, -50%) scale(1.18); }
     }
     @keyframes scan {
       0%, 100% { top: 8%; opacity: 0.8; }
@@ -161,10 +182,31 @@
           <input type="file" id="boardInput" accept="image/*" capture="environment" class="hidden">
         </label>
 
-        <!-- Preview do Tabuleiro com pino interativo -->
-        <div id="boardContainer" class="relative mt-3 hidden overflow-hidden rounded-xl border border-slate-700 w-full flex justify-center bg-black">
-          <img id="boardPreview" class="max-h-60 w-auto object-contain cursor-crosshair">
-          <div id="boardPin" class="pin hidden"></div>
+        <!-- Viewport Interativo com Zoom e Pan do Tabuleiro -->
+        <div id="boardContainer" class="relative mt-3 hidden w-full rounded-xl border border-slate-700 bg-black overflow-hidden flex flex-col shadow-lg">
+          <!-- Barra de Ferramentas de Zoom & Coordenadas -->
+          <div class="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-slate-800 z-10 text-xs">
+            <div class="flex items-center gap-1.5">
+              <button id="btnBoardZoomIn" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold rounded text-sm active:scale-95 shadow">➕</button>
+              <button id="btnBoardZoomOut" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold rounded text-sm active:scale-95 shadow">➖</button>
+              <button id="btnBoardZoomReset" type="button" class="px-2 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded text-[11px] active:scale-95 shadow">Reset</button>
+              <span id="boardZoomBadge" class="text-[10px] text-slate-400 ml-1">100%</span>
+            </div>
+            <span id="boardCoordBadge" class="text-[10px] text-emerald-400 font-semibold bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-800/80 hidden">📍 Marcado</span>
+          </div>
+
+          <!-- Área do Visor Interativo -->
+          <div id="boardViewport" class="relative w-full h-72 md:h-84 overflow-hidden cursor-crosshair touch-none select-none flex items-center justify-center bg-slate-950">
+            <div id="boardTransformLayer" class="relative inline-block origin-top-left">
+              <img id="boardPreview" class="block max-w-full max-h-72 md:max-h-84 object-contain pointer-events-none">
+              <!-- Pino de Alta Precisão com Mira Central -->
+              <div id="boardPin" class="pin hidden"></div>
+            </div>
+          </div>
+          <div class="px-2.5 py-1 bg-slate-950 text-[10px] text-slate-400 border-t border-slate-800 flex justify-between items-center">
+            <span>🔍 Arraste para mover • ➕ / ➖ para ampliar</span>
+            <span class="text-emerald-400 font-medium">Toque no buraco</span>
+          </div>
         </div>
         <p id="boardHint" class="text-[11px] text-emerald-300 font-medium mt-2 hidden text-center">
           👉 Toque na foto exatamente no buraco vazio!
@@ -188,10 +230,31 @@
           <input type="file" id="boxInput" accept="image/*" class="hidden">
         </label>
 
-        <!-- Preview da Caixa -->
-        <div id="boxContainer" class="relative mt-3 hidden overflow-hidden rounded-xl border border-slate-700 w-full flex justify-center bg-black">
-          <img id="boxPreview" class="max-h-60 w-auto object-contain cursor-crosshair">
-          <div id="targetPin" class="pin hidden"></div>
+        <!-- Viewport Interativo com Zoom e Pan da Caixa -->
+        <div id="boxContainer" class="relative mt-3 hidden w-full rounded-xl border border-slate-700 bg-black overflow-hidden flex flex-col shadow-lg">
+          <!-- Barra de Ferramentas de Zoom & Coordenadas -->
+          <div class="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-slate-800 z-10 text-xs">
+            <div class="flex items-center gap-1.5">
+              <button id="btnBoxZoomIn" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold rounded text-sm active:scale-95 shadow">➕</button>
+              <button id="btnBoxZoomOut" type="button" class="w-7 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold rounded text-sm active:scale-95 shadow">➖</button>
+              <button id="btnBoxZoomReset" type="button" class="px-2 h-7 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded text-[11px] active:scale-95 shadow">Reset</button>
+              <span id="boxZoomBadge" class="text-[10px] text-slate-400 ml-1">100%</span>
+            </div>
+            <span id="boxCoordBadge" class="text-[10px] text-cyan-400 font-semibold bg-cyan-950/80 px-2 py-0.5 rounded-full border border-cyan-800/80 hidden">🎯 Marcado</span>
+          </div>
+
+          <!-- Área do Visor Interativo -->
+          <div id="boxViewport" class="relative w-full h-72 md:h-84 overflow-hidden cursor-crosshair touch-none select-none flex items-center justify-center bg-slate-950">
+            <div id="boxTransformLayer" class="relative inline-block origin-top-left">
+              <img id="boxPreview" class="block max-w-full max-h-72 md:max-h-84 object-contain pointer-events-none">
+              <!-- Pino de Alta Precisão com Mira Central -->
+              <div id="targetPin" class="pin hidden"></div>
+            </div>
+          </div>
+          <div class="px-2.5 py-1 bg-slate-950 text-[10px] text-slate-400 border-t border-slate-800 flex justify-between items-center">
+            <span>🔍 Arraste para mover • ➕ / ➖ para ampliar</span>
+            <span class="text-cyan-400 font-medium">Toque no ponto da caixa</span>
+          </div>
         </div>
         <p id="boxHint" class="text-[11px] text-cyan-300 font-medium mt-2 hidden text-center">
           🎯 Toque no ponto correspondente na caixa

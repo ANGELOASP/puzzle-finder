@@ -278,6 +278,9 @@ async function onPuzzleSelected(puzzle) {
   try {
     const response = await fetch(puzzle.box_image_url);
     boxBlob = await response.blob();
+    boxPreview.onload = () => {
+      if (boxViewer) boxViewer.reset();
+    };
     boxPreview.src = URL.createObjectURL(boxBlob);
     boxContainer.classList.remove('hidden');
     boxHint.classList.remove('hidden');
@@ -298,19 +301,273 @@ function updateProgressBar() {
 }
 
 // ==========================================
-// 5. ELEMENTOS DO FLUXO PRINCIPAL
+// 5. VISUALIZADOR INTERATIVO COM ZOOM, PAN E MIRA DE ALTA PRECISÃO
 // ==========================================
+class InteractiveImageViewer {
+  constructor({
+    viewport,
+    layer,
+    img,
+    pin,
+    zoomInBtn,
+    zoomOutBtn,
+    zoomResetBtn,
+    zoomBadge,
+    coordBadge,
+    onSelect
+  }) {
+    this.viewport = viewport;
+    this.layer = layer;
+    this.img = img;
+    this.pin = pin;
+    this.zoomBadge = zoomBadge;
+    this.coordBadge = coordBadge;
+    this.onSelect = onSelect;
+
+    this.scale = 1.0;
+    this.minScale = 1.0;
+    this.maxScale = 5.0;
+    this.translateX = 0;
+    this.translateY = 0;
+
+    this.isDragging = false;
+    this.hasMoved = false;
+    this.startX = 0;
+    this.startY = 0;
+    this.initialTx = 0;
+    this.initialTy = 0;
+
+    this.selectedNormX = null;
+    this.selectedNormY = null;
+
+    this.initEvents(zoomInBtn, zoomOutBtn, zoomResetBtn);
+  }
+
+  reset() {
+    this.scale = 1.0;
+    this.translateX = 0;
+    this.translateY = 0;
+    this.applyTransform();
+  }
+
+  initEvents(zoomInBtn, zoomOutBtn, zoomResetBtn) {
+    if (zoomInBtn) {
+      zoomInBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.zoom(1.4);
+      });
+    }
+    if (zoomOutBtn) {
+      zoomOutBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.zoom(1 / 1.4);
+      });
+    }
+    if (zoomResetBtn) {
+      zoomResetBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.reset();
+      });
+    }
+
+    this.viewport.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.viewport.addEventListener('pointermove', (e) => this.onPointerMove(e));
+    this.viewport.addEventListener('pointerup', (e) => this.onPointerUp(e));
+    this.viewport.addEventListener('pointercancel', (e) => this.onPointerUp(e));
+
+    this.viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.25 : 0.8;
+      const rect = this.viewport.getBoundingClientRect();
+      this.zoom(zoomFactor, e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+  }
+
+  zoom(factor, focalX = null, focalY = null) {
+    const prevScale = this.scale;
+    const newScale = Math.max(this.minScale, Math.min(this.maxScale, prevScale * factor));
+    if (Math.abs(newScale - prevScale) < 0.01) return;
+
+    const vpRect = this.viewport.getBoundingClientRect();
+    const fx = (focalX !== null) ? focalX : vpRect.width / 2;
+    const fy = (focalY !== null) ? focalY : vpRect.height / 2;
+
+    this.translateX = fx - (fx - this.translateX) * (newScale / prevScale);
+    this.translateY = fy - (fy - this.translateY) * (newScale / prevScale);
+
+    this.scale = newScale;
+    this.clampPan();
+    this.applyTransform();
+  }
+
+  clampPan() {
+    const vpW = this.viewport.clientWidth;
+    const vpH = this.viewport.clientHeight;
+    const layerW = this.layer.offsetWidth * this.scale;
+    const layerH = this.layer.offsetHeight * this.scale;
+
+    if (layerW <= vpW) {
+      this.translateX = (vpW - layerW) / 2;
+    } else {
+      const minX = vpW - layerW;
+      const maxX = 0;
+      this.translateX = Math.min(maxX, Math.max(minX, this.translateX));
+    }
+
+    if (layerH <= vpH) {
+      this.translateY = (vpH - layerH) / 2;
+    } else {
+      const minY = vpH - layerH;
+      const maxY = 0;
+      this.translateY = Math.min(maxY, Math.max(minY, this.translateY));
+    }
+  }
+
+  applyTransform() {
+    this.layer.style.transform = `translate(${this.translateX}px, ${this.translateY}px) scale(${this.scale})`;
+    if (this.zoomBadge) {
+      this.zoomBadge.innerText = `${Math.round(this.scale * 100)}%`;
+    }
+  }
+
+  onPointerDown(e) {
+    this.isDragging = true;
+    this.hasMoved = false;
+    this.startX = e.clientX;
+    this.startY = e.clientY;
+    this.initialTx = this.translateX;
+    this.initialTy = this.translateY;
+    try { this.viewport.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+
+  onPointerMove(e) {
+    if (!this.isDragging) return;
+    const dx = e.clientX - this.startX;
+    const dy = e.clientY - this.startY;
+
+    if (Math.hypot(dx, dy) > 5) {
+      this.hasMoved = true;
+    }
+
+    if (this.hasMoved) {
+      this.translateX = this.initialTx + dx;
+      this.translateY = this.initialTy + dy;
+      this.clampPan();
+      this.layer.style.transform = `translate(${this.translateX}px, ${this.translateY}px) scale(${this.scale})`;
+    }
+  }
+
+  onPointerUp(e) {
+    if (!this.isDragging) return;
+    this.isDragging = false;
+    try { this.viewport.releasePointerCapture(e.pointerId); } catch (_) {}
+
+    if (!this.hasMoved) {
+      this.handleTap(e.clientX, e.clientY);
+    }
+  }
+
+  handleTap(clientX, clientY) {
+    const layerRect = this.layer.getBoundingClientRect();
+    const clickX = clientX - layerRect.left;
+    const clickY = clientY - layerRect.top;
+
+    const normX = Math.max(0, Math.min(1, clickX / layerRect.width));
+    const normY = Math.max(0, Math.min(1, clickY / layerRect.height));
+
+    this.selectedNormX = normX;
+    this.selectedNormY = normY;
+
+    this.pin.style.left = `${normX * 100}%`;
+    this.pin.style.top = `${normY * 100}%`;
+    this.pin.classList.remove('hidden');
+
+    if (this.coordBadge) {
+      this.coordBadge.innerText = `📍 ${Math.round(normX * 100)}%, ${Math.round(normY * 100)}%`;
+      this.coordBadge.classList.remove('hidden');
+    }
+
+    if (navigator.vibrate) navigator.vibrate(35);
+
+    if (this.onSelect) {
+      this.onSelect(normX, normY);
+    }
+  }
+}
+
+// Elementos do Tabuleiro
 const boardInput = document.getElementById('boardInput');
 const boardPreview = document.getElementById('boardPreview');
 const boardContainer = document.getElementById('boardContainer');
+const boardViewport = document.getElementById('boardViewport');
+const boardTransformLayer = document.getElementById('boardTransformLayer');
 const boardPin = document.getElementById('boardPin');
 const boardHint = document.getElementById('boardHint');
+const btnBoardZoomIn = document.getElementById('btnBoardZoomIn');
+const btnBoardZoomOut = document.getElementById('btnBoardZoomOut');
+const btnBoardZoomReset = document.getElementById('btnBoardZoomReset');
+const boardZoomBadge = document.getElementById('boardZoomBadge');
+const boardCoordBadge = document.getElementById('boardCoordBadge');
 
+// Elementos da Caixa
 const boxInput = document.getElementById('boxInput');
 const boxPreview = document.getElementById('boxPreview');
 const boxContainer = document.getElementById('boxContainer');
+const boxViewport = document.getElementById('boxViewport');
+const boxTransformLayer = document.getElementById('boxTransformLayer');
 const targetPin = document.getElementById('targetPin');
 const boxHint = document.getElementById('boxHint');
+const btnBoxZoomIn = document.getElementById('btnBoxZoomIn');
+const btnBoxZoomOut = document.getElementById('btnBoxZoomOut');
+const btnBoxZoomReset = document.getElementById('btnBoxZoomReset');
+const boxZoomBadge = document.getElementById('boxZoomBadge');
+const boxCoordBadge = document.getElementById('boxCoordBadge');
+
+// Instanciação dos visualizadores interativos
+let boardViewer = null;
+let boxViewer = null;
+
+let boardPercentX = 0.5, boardPercentY = 0.5, hasSelectedBoard = false;
+let targetPercentX = 0.5, targetPercentY = 0.5, hasSelectedBox = false;
+
+boardViewer = new InteractiveImageViewer({
+  viewport: boardViewport,
+  layer: boardTransformLayer,
+  img: boardPreview,
+  pin: boardPin,
+  zoomInBtn: btnBoardZoomIn,
+  zoomOutBtn: btnBoardZoomOut,
+  zoomResetBtn: btnBoardZoomReset,
+  zoomBadge: boardZoomBadge,
+  coordBadge: boardCoordBadge,
+  onSelect: (nx, ny) => {
+    boardPercentX = nx;
+    boardPercentY = ny;
+    hasSelectedBoard = true;
+    checkReady();
+  }
+});
+
+boxViewer = new InteractiveImageViewer({
+  viewport: boxViewport,
+  layer: boxTransformLayer,
+  img: boxPreview,
+  pin: targetPin,
+  zoomInBtn: btnBoxZoomIn,
+  zoomOutBtn: btnBoxZoomOut,
+  zoomResetBtn: btnBoxZoomReset,
+  zoomBadge: boxZoomBadge,
+  coordBadge: boxCoordBadge,
+  onSelect: (nx, ny) => {
+    targetPercentX = nx;
+    targetPercentY = ny;
+    hasSelectedBox = true;
+    checkReady();
+  }
+});
 
 const tableInput = document.getElementById('tableInput');
 const tablePreview = document.getElementById('tablePreview');
@@ -326,10 +583,6 @@ const shapeMatchTag = document.getElementById('shapeMatchTag');
 let boardBlob = null;
 let boxBlob = null;
 let tableBlob = null;
-
-let boardPercentX = 0.5, boardPercentY = 0.5, hasSelectedBoard = false;
-let targetPercentX = 0.5, targetPercentY = 0.5, hasSelectedBox = false;
-
 let lastFoundResult = null;
 
 async function compressImage(file, maxDimension = 1600) {
@@ -367,10 +620,13 @@ async function compressImage(file, maxDimension = 1600) {
   });
 }
 
-// Tabuleiro
+// Carregar Tabuleiro
 boardInput.addEventListener('change', async (e) => {
   if (e.target.files && e.target.files[0]) {
     boardBlob = await compressImage(e.target.files[0]);
+    boardPreview.onload = () => {
+      boardViewer.reset();
+    };
     boardPreview.src = URL.createObjectURL(boardBlob);
     boardContainer.classList.remove('hidden');
     boardHint.classList.remove('hidden');
@@ -378,60 +634,22 @@ boardInput.addEventListener('change', async (e) => {
   }
 });
 
-function handleBoardSelection(clientX, clientY) {
-  const rect = boardPreview.getBoundingClientRect();
-  const clickX = clientX - rect.left;
-  const clickY = clientY - rect.top;
-
-  boardPercentX = Math.max(0, Math.min(1, clickX / rect.width));
-  boardPercentY = Math.max(0, Math.min(1, clickY / rect.height));
-
-  boardPin.style.left = `${clickX}px`;
-  boardPin.style.top = `${clickY}px`;
-  boardPin.classList.remove('hidden');
-
-  if (navigator.vibrate) navigator.vibrate(35);
-  hasSelectedBoard = true;
-  checkReady();
-}
-
-boardPreview.addEventListener('click', (e) => handleBoardSelection(e.clientX, e.clientY));
-boardPreview.addEventListener('touchstart', (e) => {
-  if (e.touches && e.touches[0]) handleBoardSelection(e.touches[0].clientX, e.touches[0].clientY);
-}, { passive: true });
-
-// Imagem da Caixa (Manual)
+// Carregar Imagem da Caixa (Manual)
 boxInput.addEventListener('change', async (e) => {
   if (e.target.files && e.target.files[0]) {
     boxBlob = await compressImage(e.target.files[0]);
+    boxPreview.onload = () => {
+      boxViewer.reset();
+    };
+    boxPreview.onload = () => {
+      if (boxViewer) boxViewer.reset();
+    };
     boxPreview.src = URL.createObjectURL(boxBlob);
     boxContainer.classList.remove('hidden');
     boxHint.classList.remove('hidden');
     checkReady();
   }
 });
-
-function handleBoxSelection(clientX, clientY) {
-  const rect = boxPreview.getBoundingClientRect();
-  const clickX = clientX - rect.left;
-  const clickY = clientY - rect.top;
-
-  targetPercentX = Math.max(0, Math.min(1, clickX / rect.width));
-  targetPercentY = Math.max(0, Math.min(1, clickY / rect.height));
-
-  targetPin.style.left = `${clickX}px`;
-  targetPin.style.top = `${clickY}px`;
-  targetPin.classList.remove('hidden');
-
-  if (navigator.vibrate) navigator.vibrate(30);
-  hasSelectedBox = true;
-  checkReady();
-}
-
-boxPreview.addEventListener('click', (e) => handleBoxSelection(e.clientX, e.clientY));
-boxPreview.addEventListener('touchstart', (e) => {
-  if (e.touches && e.touches[0]) handleBoxSelection(e.touches[0].clientX, e.touches[0].clientY);
-}, { passive: true });
 
 // Peças Soltas na Mesa
 tableInput.addEventListener('change', async (e) => {
