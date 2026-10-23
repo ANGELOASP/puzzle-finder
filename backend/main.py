@@ -1,6 +1,7 @@
-import base64, cv2, numpy as np
+import base64, hashlib, json, os, threading, time, urllib.error, urllib.request
+import cv2, numpy as np
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from puzzle_engine import PuzzleEngine
@@ -16,6 +17,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 engine = PuzzleEngine()
+
+# Login: a API só atende quem tem sessão válida no Supabase Auth (mesmo projeto do frontend).
+# URL e anon key são públicas; REQUIRE_AUTH=false desliga a checagem (desenvolvimento local).
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://gfjxcsvxhaojbtuixpjh.supabase.co").rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get(
+    "SUPABASE_ANON_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmanhjc3Z4aGFvamJ0dWl4cGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEyMzU5NjYsImV4cCI6MjEwNjgxMTk2Nn0.gKx3hutXIkemUfVR_O7MFnibpUxY_tYslNSY1D1M4ds",
+)
+REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() != "false"
+# O scanner manda vários quadros por segundo: guarda tokens já validados por alguns minutos
+TOKEN_CACHE_SECONDS = 300
+_token_cache = {}
+_token_cache_lock = threading.Lock()
+
+def fetch_supabase_user(token: str) -> Optional[dict]:
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return json.load(res)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return None
+        raise HTTPException(status_code=503, detail="Não foi possível validar o login agora. Tente de novo.")
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(status_code=503, detail="Não foi possível validar o login agora. Tente de novo.")
+
+def require_user(authorization: Optional[str] = Header(None)) -> Optional[str]:
+    """Dependência: devolve o id do usuário logado (ou None com REQUIRE_AUTH=false)."""
+    if not REQUIRE_AUTH:
+        return None
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Faça login para usar o PuzzleFinder.")
+    token = authorization[7:].strip()
+    key = hashlib.sha256(token.encode()).hexdigest()
+    now = time.time()
+    with _token_cache_lock:
+        cached = _token_cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]
+
+    user = fetch_supabase_user(token)
+    if not user or not user.get("id"):
+        raise HTTPException(status_code=401, detail="Sessão expirada. Entre de novo.")
+
+    with _token_cache_lock:
+        if len(_token_cache) > 1000:
+            _token_cache.clear()
+        _token_cache[key] = (user["id"], now + TOKEN_CACHE_SECONDS)
+    return user["id"]
 
 async def read_upload(upload: Optional[UploadFile]) -> Optional[bytes]:
     if upload is None:
@@ -52,6 +105,7 @@ async def find_piece(
     board_y_ratio: Optional[float] = Form(None),
     total_pieces: Optional[int] = Form(None),
     annotate: bool = Form(True),
+    user_id: Optional[str] = Depends(require_user),
 ):
     table_bytes = await read_upload(table_file)
     if table_bytes is None:

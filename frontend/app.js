@@ -149,6 +149,20 @@ function getApiUrl() {
   return (localStorage.getItem('puzzle_backend_url') || DEFAULT_API_URL).replace(/\/$/, '');
 }
 
+// A API só atende usuários logados: envia o token da sessão do Supabase
+async function authHeaders() {
+  if (!supabaseClient) return {};
+  const { data } = await supabaseClient.auth.getSession();
+  const token = data.session && data.session.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function apiErrorMessage(res, fallback) {
+  if (res.status === 401) return 'Sua sessão expirou. Saia e entre de novo.';
+  const err = await res.json().catch(() => ({}));
+  return err.detail || fallback;
+}
+
 let apiWakeup = null;
 
 // O plano gratuito do Render hiberna: a primeira resposta pode levar ~1 min
@@ -212,9 +226,10 @@ btnResetSettings.addEventListener('click', () => {
 });
 
 // ==========================================
-// 5. INTEGRAÇÃO COM SUPABASE (BANCO & STORAGE)
+// 5. INTEGRAÇÃO COM SUPABASE (LOGIN, BANCO & STORAGE)
 // ==========================================
 let supabaseClient = null;
+let currentUser = null;
 let puzzles = [];
 let currentPuzzle = null;
 let currentFoundCount = 0;
@@ -238,26 +253,199 @@ const boxSavedBadge = document.getElementById('boxSavedBadge');
 const btnConfirmFound = document.getElementById('btnConfirmFound');
 const btnConfirmFoundText = document.getElementById('btnConfirmFoundText');
 
+const authScreen = document.getElementById('authScreen');
+const appRoot = document.getElementById('appRoot');
+const authLoading = document.getElementById('authLoading');
+const loginForm = document.getElementById('loginForm');
+const loginEmail = document.getElementById('loginEmail');
+const loginPassword = document.getElementById('loginPassword');
+const loginError = document.getElementById('loginError');
+const btnLogin = document.getElementById('btnLogin');
+const btnTogglePassword = document.getElementById('btnTogglePassword');
+const btnForgotPassword = document.getElementById('btnForgotPassword');
+const newPasswordForm = document.getElementById('newPasswordForm');
+const newPassword = document.getElementById('newPassword');
+const newPasswordError = document.getElementById('newPasswordError');
+const btnSaveNewPassword = document.getElementById('btnSaveNewPassword');
+const accountEmail = document.getElementById('accountEmail');
+const btnLogout = document.getElementById('btnLogout');
+
+let authSubscription = null;
+
 function initSupabase() {
   const url = localStorage.getItem('puzzle_supabase_url') || DEFAULT_SUPABASE_URL;
   const key = localStorage.getItem('puzzle_supabase_key') || DEFAULT_SUPABASE_KEY;
 
+  if (authSubscription) {
+    authSubscription.unsubscribe();
+    authSubscription = null;
+  }
+
   if (!window.supabase) {
     supabaseClient = null;
     setServiceStatus('db', 'error', 'Biblioteca não carregou');
-    puzzleSelect.innerHTML = '<option value="">Sem quebra-cabeça (modo avulso)</option>';
+    showAuthView('login', 'Não foi possível carregar o login. Confira a conexão e recarregue a página.');
     return;
   }
 
   try {
     supabaseClient = window.supabase.createClient(url, key);
-    loadPuzzlesFromSupabase();
   } catch (e) {
     console.error('Erro ao conectar ao Supabase:', e);
     supabaseClient = null;
     setServiceStatus('db', 'error', 'Erro de conexão');
+    showAuthView('login', 'Configuração do banco inválida.');
+    return;
   }
+
+  // INITIAL_SESSION chega logo após criar o cliente: decide entre login e app.
+  // O Supabase pede para não aguardar outras chamadas dentro deste callback, daí o setTimeout.
+  const { data } = supabaseClient.auth.onAuthStateChange((event, session) => {
+    setTimeout(() => handleAuthChange(event, session), 0);
+  });
+  authSubscription = data.subscription;
 }
+
+function handleAuthChange(event, session) {
+  if (event === 'PASSWORD_RECOVERY') {
+    showAuthView('newPassword');
+    return;
+  }
+  const user = session ? session.user : null;
+  if (!user) {
+    if (currentUser || event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') onSignedOut();
+    return;
+  }
+  // Atualizações de token não mudam o usuário: nada a recarregar
+  if (currentUser && currentUser.id === user.id) {
+    currentUser = user;
+    return;
+  }
+  onSignedIn(user);
+}
+
+function showAuthView(view, errorMessage = '') {
+  hide(appRoot);
+  show(authScreen, 'flex');
+  hide(authLoading, 'flex');
+  loginForm.classList.toggle('hidden', view !== 'login');
+  newPasswordForm.classList.toggle('hidden', view !== 'newPassword');
+  const errorEl = view === 'newPassword' ? newPasswordError : loginError;
+  errorEl.textContent = errorMessage;
+  errorEl.classList.toggle('hidden', !errorMessage);
+  (view === 'newPassword' ? newPassword : (loginEmail.value ? loginPassword : loginEmail)).focus();
+}
+
+function onSignedIn(user) {
+  currentUser = user;
+  accountEmail.textContent = user.email || '';
+  hide(authScreen, 'flex');
+  show(appRoot);
+  loginForm.reset();
+  loadPuzzlesFromSupabase();
+}
+
+function onSignedOut() {
+  currentUser = null;
+  puzzles = [];
+  currentPuzzle = null;
+  hide(puzzleProgressContainer);
+  hide(boxSavedBadge);
+  hide(resultSection);
+  clearBoxImage();
+  puzzleSelect.innerHTML = '<option value="">Carregando…</option>';
+  setServiceStatus('db', 'pending', 'Desconectado');
+  if (settingsDialog.open) settingsDialog.close();
+  showAuthView('login');
+}
+
+const AUTH_ERRORS = {
+  'Invalid login credentials': 'E-mail ou senha incorretos.',
+  'Email not confirmed': 'Confirme seu e-mail pelo link que enviamos antes de entrar.',
+  'User banned': 'Esta conta está bloqueada.',
+};
+
+function translateAuthError(error) {
+  if (!error) return '';
+  if (AUTH_ERRORS[error.message]) return AUTH_ERRORS[error.message];
+  if (/fetch|network/i.test(error.message)) return 'Sem conexão com o servidor. Confira a internet.';
+  if (/password/i.test(error.message) && /(least|characters|weak)/i.test(error.message)) return 'Senha fraca: use pelo menos 8 caracteres.';
+  return error.message;
+}
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!supabaseClient) return;
+  const email = loginEmail.value.trim();
+  const password = loginPassword.value;
+  if (!email || !password) {
+    showAuthView('login', 'Informe e-mail e senha.');
+    return;
+  }
+
+  btnLogin.disabled = true;
+  btnLogin.textContent = 'Entrando…';
+  hide(loginError);
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  btnLogin.disabled = false;
+  btnLogin.textContent = 'Entrar';
+  if (error) {
+    showAuthView('login', translateAuthError(error));
+    loginPassword.select();
+  }
+  // Sucesso: onAuthStateChange (SIGNED_IN) abre o app
+});
+
+btnTogglePassword.addEventListener('click', () => {
+  const visible = loginPassword.type === 'text';
+  loginPassword.type = visible ? 'password' : 'text';
+  btnTogglePassword.setAttribute('aria-pressed', String(!visible));
+  btnTogglePassword.setAttribute('aria-label', visible ? 'Mostrar senha' : 'Ocultar senha');
+});
+
+btnForgotPassword.addEventListener('click', async () => {
+  const email = loginEmail.value.trim();
+  if (!email || !loginEmail.checkValidity()) {
+    showAuthView('login', 'Digite seu e-mail acima e toque de novo em “Esqueci minha senha”.');
+    loginEmail.focus();
+    return;
+  }
+  btnForgotPassword.disabled = true;
+  const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/`,
+  });
+  btnForgotPassword.disabled = false;
+  if (error) {
+    showAuthView('login', translateAuthError(error));
+  } else {
+    notify('Se existir uma conta com esse e-mail, enviamos um link para criar uma nova senha.', 'success', 7000);
+  }
+});
+
+newPasswordForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (newPassword.value.length < 8) {
+    showAuthView('newPassword', 'Use pelo menos 8 caracteres.');
+    return;
+  }
+  btnSaveNewPassword.disabled = true;
+  const { data, error } = await supabaseClient.auth.updateUser({ password: newPassword.value });
+  btnSaveNewPassword.disabled = false;
+  if (error) {
+    showAuthView('newPassword', translateAuthError(error));
+    return;
+  }
+  newPasswordForm.reset();
+  notify('Senha atualizada.', 'success');
+  onSignedIn(data.user);
+});
+
+btnLogout.addEventListener('click', async () => {
+  btnLogout.disabled = true;
+  await supabaseClient.auth.signOut();
+  btnLogout.disabled = false;
+  onSignedOut();
+});
 
 btnNewPuzzle.addEventListener('click', () => {
   if (!supabaseClient) {
@@ -286,21 +474,18 @@ newPuzzleForm.addEventListener('submit', async (e) => {
 
   try {
     const compressedBlob = await compressImage(file);
-    const fileName = `box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
+    // Bucket privado: cada usuário grava na própria pasta
+    const filePath = `${currentUser.id}/box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
 
     const { error: uploadError } = await supabaseClient.storage
       .from('puzzle-images')
-      .upload(fileName, compressedBlob, { contentType: 'image/jpeg' });
+      .upload(filePath, compressedBlob, { contentType: 'image/jpeg' });
 
     if (uploadError) throw uploadError;
 
-    const { data: publicUrlData } = supabaseClient.storage
-      .from('puzzle-images')
-      .getPublicUrl(fileName);
-
     const { data: insertData, error: insertError } = await supabaseClient
       .from('puzzles')
-      .insert([{ name, total_pieces: total, box_image_url: publicUrlData.publicUrl }])
+      .insert([{ name, total_pieces: total, box_image_path: filePath }])
       .select()
       .single();
 
@@ -382,10 +567,7 @@ async function onPuzzleSelected(puzzle) {
       .from('found_pieces')
       .select('*', { count: 'exact', head: true })
       .eq('puzzle_id', puzzle.id),
-    fetch(puzzle.box_image_url).then((r) => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.blob();
-    }),
+    downloadBoxImage(puzzle),
   ]);
 
   // O usuário pode ter trocado de quebra-cabeça enquanto carregava
@@ -403,6 +585,18 @@ async function onPuzzleSelected(puzzle) {
     console.error('Erro ao carregar imagem da caixa:', imageResult.reason);
     notify('Não foi possível carregar a imagem da caixa salva.', 'error');
   }
+}
+
+// Bucket privado: baixa pela sessão do usuário (cadastros antigos podem ter só a URL pública)
+async function downloadBoxImage(puzzle) {
+  if (puzzle.box_image_path) {
+    const { data, error } = await supabaseClient.storage.from('puzzle-images').download(puzzle.box_image_path);
+    if (error) throw error;
+    return data;
+  }
+  const res = await fetch(puzzle.box_image_url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
 }
 
 function updateProgressBar() {
@@ -906,12 +1100,12 @@ btnFind.addEventListener('click', async () => {
     if (apiWakeup) await apiWakeup;
     const res = await fetchWithTimeout(`${getApiUrl()}/api/find-piece`, {
       method: 'POST',
+      headers: await authHeaders(),
       body: buildFindPieceForm(tableBlob)
     }, 90000);
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || 'Não foi possível encontrar a peça correspondente.');
+      throw new Error(await apiErrorMessage(res, 'Não foi possível encontrar a peça correspondente.'));
     }
 
     const data = await res.json();
@@ -1148,6 +1342,7 @@ async function scanFrame(session) {
     // 2. Envia só as coordenadas de volta (annotate=false): resposta leve a cada quadro
     const res = await fetchWithTimeout(`${getApiUrl()}/api/find-piece`, {
       method: 'POST',
+      headers: await authHeaders(),
       body: buildFindPieceForm(frameBlob, { annotate: false })
     }, 60000);
 
@@ -1167,7 +1362,9 @@ async function scanFrame(session) {
       setLocked(false);
       scannerStatusText.textContent = res.status === 404
         ? 'Nenhuma peça à vista. Aponte para a mesa com as peças espalhadas.'
-        : 'Rastreando… aproxime ou afaste a câmera devagar.';
+        : res.status === 401
+          ? 'Sua sessão expirou. Feche a câmera, saia e entre de novo.'
+          : 'Rastreando… aproxime ou afaste a câmera devagar.';
     }
 
   } catch (e) {
