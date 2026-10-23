@@ -1,4 +1,4 @@
-﻿const boxInput = document.getElementById('boxInput');
+const boxInput = document.getElementById('boxInput');
 const tableInput = document.getElementById('tableInput');
 const boxPreview = document.getElementById('boxPreview');
 const tablePreview = document.getElementById('tablePreview');
@@ -14,8 +14,13 @@ const apiUrlInput = document.getElementById('apiUrl');
 let boxFile = null, tableFile = null;
 let targetPercentX = 0.5, targetPercentY = 0.5, hasSelectedTarget = false;
 
-if (localStorage.getItem('puzzle_backend_url')) {
-  apiUrlInput.value = localStorage.getItem('puzzle_backend_url');
+const DEFAULT_API_URL = 'https://puzzle-finder-api.onrender.com';
+const savedUrl = localStorage.getItem('puzzle_backend_url');
+if (savedUrl && !savedUrl.includes('localhost')) {
+  apiUrlInput.value = savedUrl;
+} else {
+  apiUrlInput.value = DEFAULT_API_URL;
+  localStorage.setItem('puzzle_backend_url', DEFAULT_API_URL);
 }
 apiUrlInput.addEventListener('change', () => {
   localStorage.setItem('puzzle_backend_url', apiUrlInput.value);
