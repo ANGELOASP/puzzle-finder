@@ -1,4 +1,4 @@
-﻿import base64, cv2, numpy as np
+import base64, cv2, numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from puzzle_engine import PuzzleEngine
@@ -25,8 +25,9 @@ def cv2_to_base64_jpeg(cv2_img):
     return base64.b64encode(buffer).decode('utf-8')
 
 @app.get("/")
+@app.get("/healthz")
 def health():
-    return {"status": "online"}
+    return {"status": "online", "message": "PuzzleFinder API online na nuvem!"}
 
 @app.post("/api/find-piece")
 async def find_piece(
