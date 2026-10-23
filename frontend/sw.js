@@ -1,11 +1,15 @@
-const CACHE_NAME = 'puzzlefinder-v1';
+const CACHE_NAME = 'puzzlefinder-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/app.js',
   '/manifest.json',
+  '/favicon.png',
+  '/favicon-32.png',
+  '/apple-touch-icon.png',
   '/icon-192.png',
-  '/icon-512.png'
+  '/icon-512.png',
+  '/logo.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -33,7 +37,6 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Let API requests go directly to network
   if (event.request.url.includes('/api/')) {
     return;
   }
