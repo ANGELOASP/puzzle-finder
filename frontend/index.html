@@ -37,6 +37,10 @@
       0%, 100% { transform: translate(-50%, -50%) scale(1); }
       50% { transform: translate(-50%, -50%) scale(1.15); }
     }
+    @keyframes scan {
+      0%, 100% { top: 8%; opacity: 0.8; }
+      50% { top: 92%; opacity: 1; }
+    }
     img, button {
       -webkit-tap-highlight-color: transparent;
       user-select: none;
@@ -55,10 +59,10 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <!-- Botão Conectar Supabase -->
+        <!-- Status Supabase -->
         <button id="btnOpenSupabaseModal" class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 rounded-full text-xs font-medium transition active:scale-95">
           <span class="text-emerald-400">⚡</span>
-          <span id="supabaseStatusLabel">Supabase</span>
+          <span id="supabaseStatusLabel">Supabase Conectado 🟢</span>
         </button>
 
         <!-- Botão de Instalar App (PWA) -->
@@ -89,7 +93,7 @@
           <div class="flex-1">
             <span class="text-[11px] text-slate-400 block font-medium">Quebra-Cabeça em Andamento:</span>
             <select id="puzzleSelect" class="bg-slate-950 text-emerald-300 font-semibold text-sm px-3 py-1.5 rounded-lg border border-slate-700 w-full sm:w-64 focus:outline-none focus:border-emerald-500">
-              <option value="">(Nenhum selecionado - Modo Avulso)</option>
+              <option value="">(Carregando do Supabase...)</option>
             </select>
           </div>
         </div>
@@ -119,7 +123,7 @@
         Reconhecimento de Formato & Cor
       </h1>
       <p class="text-slate-400 text-xs md:text-sm mt-2 max-w-lg mx-auto">
-        Escaneie o tabuleiro montado para mapear o <strong>formato dos encaixes</strong> e compare com a mesa de peças!
+        Escaneie o tabuleiro montado para mapear o <strong>formato dos encaixes</strong> e use a <strong>câmera em tempo real</strong> para achar a peça!
       </p>
       
       <!-- Status da Conexão em Nuvem -->
@@ -194,33 +198,42 @@
         </p>
       </div>
 
-      <!-- Passo 3: Peças na Mesa -->
-      <div class="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl shadow-xl flex flex-col items-center">
-        <div class="w-full flex items-center justify-between mb-1">
-          <h2 class="font-bold text-sm text-teal-400 flex items-center gap-1.5">
-            <span class="w-5 h-5 rounded-full bg-teal-500/20 text-teal-300 flex items-center justify-center text-xs">3</span>
-            Peças Soltas na Mesa
-          </h2>
+      <!-- Passo 3: Peças na Mesa (Com Opção de Scanner em Tempo Real) -->
+      <div class="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl shadow-xl flex flex-col items-center justify-between">
+        <div class="w-full">
+          <div class="w-full flex items-center justify-between mb-1">
+            <h2 class="font-bold text-sm text-teal-400 flex items-center gap-1.5">
+              <span class="w-5 h-5 rounded-full bg-teal-500/20 text-teal-300 flex items-center justify-center text-xs">3</span>
+              Peças Soltas na Mesa
+            </h2>
+          </div>
+          <p class="text-[11px] text-slate-400 text-left w-full mb-3">Escolha como buscar as peças espalhadas:</p>
+          
+          <!-- Botão Scanner em Tempo Real (AR) -->
+          <button id="btnOpenRealtimeScanner" class="w-full mb-2.5 py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition active:scale-95">
+            <span class="text-base animate-pulse">🎥</span>
+            <span>Scanner em Tempo Real (Câmera AR)</span>
+          </button>
+
+          <!-- Ou Foto Estática Tradicional -->
+          <label class="w-full flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500 rounded-xl p-2 cursor-pointer transition bg-slate-950/40 text-slate-300 text-xs">
+            <span>📷</span>
+            <span>Tirar Foto Estática</span>
+            <input type="file" id="tableInput" accept="image/*" capture="environment" class="hidden">
+          </label>
         </div>
-        <p class="text-[11px] text-slate-400 text-left w-full mb-3">Espalhe as peças viradas para cima em um fundo com contraste.</p>
-        
-        <label class="w-full flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-teal-500 active:border-teal-400 rounded-xl p-3 cursor-pointer transition bg-slate-950/40">
-          <span class="text-2xl mb-1">📸</span>
-          <span class="text-xs text-slate-200 font-medium text-center">Tirar Foto da Mesa (Câmera)</span>
-          <input type="file" id="tableInput" accept="image/*" capture="environment" class="hidden">
-        </label>
 
         <!-- Preview da Mesa -->
         <div id="tableContainer" class="mt-3 hidden overflow-hidden rounded-xl border border-slate-700 w-full flex justify-center bg-black">
-          <img id="tablePreview" class="max-h-60 w-auto object-contain">
+          <img id="tablePreview" class="max-h-48 w-auto object-contain">
         </div>
       </div>
     </div>
 
-    <!-- Botão de Ação -->
+    <!-- Botão de Ação Manual -->
     <div class="text-center mb-8">
       <button id="btnFind" disabled class="w-full md:w-auto px-12 py-3.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-black text-base rounded-2xl shadow-xl shadow-emerald-500/10 transition duration-150">
-        🔍 Encontrar Peça (Formato + Textura)
+        🔍 Encontrar Peça pela Foto
       </button>
       
       <!-- Indicador de Carregamento -->
@@ -274,6 +287,43 @@
 
   </div>
 
+  <!-- MODAL: SCANNER DE CÂMERA EM TEMPO REAL (AR) -->
+  <div id="scannerModal" class="fixed inset-0 bg-black/95 z-50 hidden flex flex-col justify-between p-3 md:p-5">
+    <!-- Header do Scanner -->
+    <div class="flex items-center justify-between text-slate-100 z-20">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-emerald-500 animate-ping"></span>
+        <span class="text-xs md:text-sm font-bold text-emerald-400">Scanner AR em Tempo Real</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnSwitchCamera" class="px-3 py-1.5 rounded-full bg-slate-800/90 text-slate-200 border border-slate-700 text-xs font-bold">🔄 Inverter</button>
+        <button id="btnCloseScanner" class="px-3.5 py-1.5 rounded-full bg-red-600/80 text-white border border-red-500 text-xs font-bold">✕ Fechar</button>
+      </div>
+    </div>
+
+    <!-- Visor de Vídeo e Canvas de Realidade Aumentada -->
+    <div class="relative flex-1 my-3 flex items-center justify-center overflow-hidden rounded-2xl border-2 border-emerald-500/40 bg-black">
+      <video id="scannerVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
+      <canvas id="scannerOverlay" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+
+      <!-- Mira Holográfica e Linha Laser de Varredura -->
+      <div class="absolute inset-x-6 inset-y-10 border border-dashed border-emerald-500/30 rounded-2xl pointer-events-none flex items-center justify-center">
+        <div class="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10b981] animate-[scan_2s_ease-in-out_infinite]"></div>
+      </div>
+
+      <!-- Alerta Flutuante de Peça Travada na Mira -->
+      <div id="scannerLockAlert" class="absolute bottom-6 inset-x-6 hidden bg-emerald-500 text-slate-950 font-black p-4 rounded-xl text-center shadow-2xl">
+        <span class="text-lg block">🎯 PEÇA LOCALIZADA NA MESA!</span>
+        <span id="scannerLockDetails" class="text-xs font-bold block mt-0.5">Encaixe confirmado • Girar 90°</span>
+      </div>
+    </div>
+
+    <!-- Barra de Status Inferior do Scanner -->
+    <div class="text-center text-xs text-slate-300 z-20 bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+      <p id="scannerStatusText" class="text-emerald-300 font-medium">Mova a câmera suavemente sobre as peças espalhadas na mesa...</p>
+    </div>
+  </div>
+
   <!-- Modal: Conectar Supabase -->
   <div id="supabaseModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
@@ -284,7 +334,7 @@
         <button id="btnCloseSupabaseModal" class="text-slate-400 hover:text-white">✕</button>
       </div>
       <p class="text-xs text-slate-400 mb-4">
-        Insira suas credenciais do projeto Supabase para salvar as fotos das caixas na nuvem e o progresso das peças montadas:
+        As credenciais do seu projeto Supabase já foram configuradas automaticamente via CLI:
       </p>
 
       <div class="space-y-3 mb-6">
@@ -319,7 +369,7 @@
       <div class="space-y-3 mb-6">
         <div>
           <label class="text-[11px] text-slate-400 block mb-1">Nome do Quebra-Cabeça:</label>
-          <input type="text" id="newPuzzleName" placeholder="Ex: Noite Estrelada de Van Gogh" class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
+          <input type="text" id="newPuzzleName" placeholder="Ex: Castelo Medieval" class="w-full bg-slate-950 border border-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg">
         </div>
         <div>
           <label class="text-[11px] text-slate-400 block mb-1">Total de Peças:</label>
@@ -332,7 +382,7 @@
       </div>
 
       <div class="flex gap-2">
-        <button id="btnCreatePuzzleSubmit" class="w-full py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition">
+        <button id="btnCreatePuzzleSubmit" class="w-full py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-400 hover:from-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition">
           Salvar Quebra-Cabeça no Supabase
         </button>
       </div>
@@ -341,7 +391,7 @@
 
   <!-- Rodapé -->
   <footer class="py-4 text-center text-[11px] text-slate-500 border-t border-slate-900">
-    PuzzleFinder • Banco de Dados Supabase • Motor de IA na Nuvem
+    PuzzleFinder • Câmera AR em Tempo Real • Banco de Dados Supabase • Motor de IA na Nuvem
   </footer>
 
   <script src="app.js"></script>

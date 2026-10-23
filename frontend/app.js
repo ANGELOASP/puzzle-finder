@@ -83,6 +83,9 @@ apiUrlInput.addEventListener('change', () => {
 // ==========================================
 // 4. INTEGRAÇÃO COM SUPABASE (BANCO & STORAGE)
 // ==========================================
+const DEFAULT_SUPABASE_URL = 'https://gfjxcsvxhaojbtuixpjh.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmanhjc3Z4aGFvamJ0dWl4cGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEyMzU5NjYsImV4cCI6MjEwNjgxMTk2Nn0.gKx3hutXIkemUfVR_O7MFnibpUxY_tYslNSY1D1M4ds';
+
 let supabaseClient = null;
 let currentPuzzle = null;
 let currentFoundCount = 0;
@@ -113,8 +116,8 @@ const boxUploadLabel = document.getElementById('boxUploadLabel');
 const btnConfirmFound = document.getElementById('btnConfirmFound');
 
 function initSupabase() {
-  const url = localStorage.getItem('puzzle_supabase_url');
-  const key = localStorage.getItem('puzzle_supabase_key');
+  const url = localStorage.getItem('puzzle_supabase_url') || DEFAULT_SUPABASE_URL;
+  const key = localStorage.getItem('puzzle_supabase_key') || DEFAULT_SUPABASE_KEY;
 
   if (url && key && window.supabase) {
     try {
@@ -125,14 +128,12 @@ function initSupabase() {
       console.error('Erro ao conectar ao Supabase:', e);
       supabaseStatusLabel.innerText = 'Erro Supabase ⚠️';
     }
-  } else {
-    supabaseStatusLabel.innerText = 'Conectar Supabase ⚡';
   }
 }
 
 btnOpenSupabaseModal.addEventListener('click', () => {
-  supabaseUrlInput.value = localStorage.getItem('puzzle_supabase_url') || '';
-  supabaseKeyInput.value = localStorage.getItem('puzzle_supabase_key') || '';
+  supabaseUrlInput.value = localStorage.getItem('puzzle_supabase_url') || DEFAULT_SUPABASE_URL;
+  supabaseKeyInput.value = localStorage.getItem('puzzle_supabase_key') || DEFAULT_SUPABASE_KEY;
   supabaseModal.classList.remove('hidden');
 });
 
@@ -156,11 +157,6 @@ btnSaveSupabaseCreds.addEventListener('click', () => {
 });
 
 btnNewPuzzle.addEventListener('click', () => {
-  if (!supabaseClient) {
-    alert('Conecte ao Supabase primeiro no botão "⚡ Supabase" para salvar na nuvem!');
-    supabaseModal.classList.remove('hidden');
-    return;
-  }
   newPuzzleModal.classList.remove('hidden');
 });
 
@@ -168,7 +164,6 @@ btnCloseNewPuzzleModal.addEventListener('click', () => {
   newPuzzleModal.classList.add('hidden');
 });
 
-// Cadastrar Novo Quebra-Cabeça no Supabase
 btnCreatePuzzleSubmit.addEventListener('click', async () => {
   const name = newPuzzleName.value.trim();
   const total = parseInt(newPuzzleTotal.value, 10) || 1000;
@@ -180,28 +175,24 @@ btnCreatePuzzleSubmit.addEventListener('click', async () => {
   }
 
   btnCreatePuzzleSubmit.disabled = true;
-  btnCreatePuzzleSubmit.innerText = 'Enviando imagem para a nuvem...';
+  btnCreatePuzzleSubmit.innerText = 'Enviando imagem para o Supabase...';
 
   try {
-    // 1. Comprime a foto da caixa
     const compressedBlob = await compressImage(file);
     const fileName = `box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
 
-    // 2. Upload para Supabase Storage
     const { error: uploadError } = await supabaseClient.storage
       .from('puzzle-images')
       .upload(fileName, compressedBlob, { contentType: 'image/jpeg' });
 
     if (uploadError) throw uploadError;
 
-    // 3. Obtém URL pública
     const { data: publicUrlData } = supabaseClient.storage
       .from('puzzle-images')
       .getPublicUrl(fileName);
 
     const boxImageUrl = publicUrlData.publicUrl;
 
-    // 4. Insere na tabela 'puzzles'
     const { data: insertData, error: insertError } = await supabaseClient
       .from('puzzles')
       .insert([{ name, total_pieces: total, box_image_url: boxImageUrl }])
@@ -225,7 +216,6 @@ btnCreatePuzzleSubmit.addEventListener('click', async () => {
   }
 });
 
-// Carregar lista de quebra-cabeças
 async function loadPuzzlesFromSupabase(autoSelectId = null) {
   if (!supabaseClient) return;
 
@@ -247,10 +237,11 @@ async function loadPuzzlesFromSupabase(autoSelectId = null) {
 
     if (autoSelectId) {
       puzzleSelect.value = autoSelectId;
-      onPuzzleSelected(autoSelectId, data);
+      const found = data.find(p => p.id === autoSelectId);
+      if (found) onPuzzleSelected(found);
     }
   } catch (err) {
-    console.error('Falha ao carregar puzzles:', err);
+    console.error('Falha ao carregar puzzles do Supabase:', err);
   }
 }
 
@@ -276,7 +267,6 @@ async function onPuzzleSelected(puzzle) {
   puzzleProgressContainer.classList.remove('hidden');
   puzzleProgressName.innerText = puzzle.name;
 
-  // Carrega contagem de peças já encontradas
   const { count } = await supabaseClient
     .from('found_pieces')
     .select('*', { count: 'exact', head: true })
@@ -285,7 +275,6 @@ async function onPuzzleSelected(puzzle) {
   currentFoundCount = count || 0;
   updateProgressBar();
 
-  // Baixa a imagem da caixa automaticamente
   try {
     const response = await fetch(puzzle.box_image_url);
     boxBlob = await response.blob();
@@ -296,7 +285,7 @@ async function onPuzzleSelected(puzzle) {
     boxUploadLabel.classList.add('hidden');
     checkReady();
   } catch (err) {
-    console.error('Erro ao carregar imagem da caixa da nuvem:', err);
+    console.error('Erro ao carregar imagem da caixa:', err);
   }
 }
 
@@ -343,7 +332,6 @@ let targetPercentX = 0.5, targetPercentY = 0.5, hasSelectedBox = false;
 
 let lastFoundResult = null;
 
-// Otimizador de imagem client-side (1600px max)
 async function compressImage(file, maxDimension = 1600) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -379,7 +367,7 @@ async function compressImage(file, maxDimension = 1600) {
   });
 }
 
-// Tabuleiro Sendo Montado
+// Tabuleiro
 boardInput.addEventListener('change', async (e) => {
   if (e.target.files && e.target.files[0]) {
     boardBlob = await compressImage(e.target.files[0]);
@@ -457,12 +445,12 @@ tableInput.addEventListener('change', async (e) => {
 
 function checkReady() {
   const hasTarget = (boardBlob && hasSelectedBoard) || (boxBlob && (hasSelectedBox || currentPuzzle));
-  if (tableBlob && hasTarget) {
-    btnFind.disabled = false;
+  if (hasTarget) {
+    btnFind.disabled = !tableBlob;
   }
 }
 
-// Enviar para a Nuvem (Render API)
+// Enviar Foto Manual para API
 btnFind.addEventListener('click', async () => {
   if (!tableBlob) return;
 
@@ -501,7 +489,6 @@ btnFind.addEventListener('click', async () => {
     const data = await res.json();
     lastFoundResult = data;
 
-    // Atualiza resultados visuais
     document.getElementById('pieceCrop').src = `data:image/jpeg;base64,${data.piece_crop_base64}`;
     document.getElementById('highlightedTable').src = `data:image/jpeg;base64,${data.annotated_table_base64}`;
     document.getElementById('rotationTag').innerText = `Girar: ${data.rotation_deg}° para encaixar`;
@@ -517,7 +504,6 @@ btnFind.addEventListener('click', async () => {
     }
 
     if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
-
     resultSection.classList.remove('hidden');
     resultSection.scrollIntoView({ behavior: 'smooth' });
 
@@ -561,6 +547,220 @@ btnConfirmFound.addEventListener('click', async () => {
     btnConfirmFound.disabled = false;
   }
 });
+
+// ==========================================
+// 6. SCANNER DE CÂMERA EM TEMPO REAL (AR)
+// ==========================================
+const btnOpenRealtimeScanner = document.getElementById('btnOpenRealtimeScanner');
+const scannerModal = document.getElementById('scannerModal');
+const btnCloseScanner = document.getElementById('btnCloseScanner');
+const btnSwitchCamera = document.getElementById('btnSwitchCamera');
+const scannerVideo = document.getElementById('scannerVideo');
+const scannerOverlay = document.getElementById('scannerOverlay');
+const scannerStatusText = document.getElementById('scannerStatusText');
+const scannerLockAlert = document.getElementById('scannerLockAlert');
+const scannerLockDetails = document.getElementById('scannerLockDetails');
+
+let cameraStream = null;
+let scanTimer = null;
+let isProcessingFrame = false;
+let currentFacingMode = 'environment'; // Traseira
+
+function playSuccessChime() {
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+    osc.frequency.setValueAtTime(880.00, audioCtx.currentTime + 0.12); // A5
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.45);
+  } catch (e) {}
+}
+
+btnOpenRealtimeScanner.addEventListener('click', async () => {
+  const hasTarget = (boardBlob && hasSelectedBoard) || (boxBlob && (hasSelectedBox || currentPuzzle));
+  if (!hasTarget) {
+    alert('Por favor, primeiro selecione o buraco no Tabuleiro (Etapa 1) ou na Caixa (Etapa 2) para saber qual peça procurar!');
+    return;
+  }
+
+  scannerModal.classList.remove('hidden');
+  await startScannerCamera();
+});
+
+btnCloseScanner.addEventListener('click', () => {
+  stopScannerCamera();
+  scannerModal.classList.add('hidden');
+});
+
+btnSwitchCamera.addEventListener('click', async () => {
+  currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+  stopScannerCamera();
+  await startScannerCamera();
+});
+
+async function startScannerCamera() {
+  try {
+    scannerStatusText.innerText = 'Inicializando visor da câmera...';
+    scannerLockAlert.classList.add('hidden');
+
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: currentFacingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+
+    scannerVideo.srcObject = cameraStream;
+    await scannerVideo.play();
+
+    scannerStatusText.innerText = 'Mova a câmera suavemente sobre as peças espalhadas...';
+    startRealtimeLoop();
+
+  } catch (err) {
+    alert(`Não foi possível acessar a câmera: ${err.message}`);
+    stopScannerCamera();
+    scannerModal.classList.add('hidden');
+  }
+}
+
+function stopScannerCamera() {
+  if (scanTimer) {
+    clearInterval(scanTimer);
+    scanTimer = null;
+  }
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  scannerVideo.srcObject = null;
+}
+
+function startRealtimeLoop() {
+  if (scanTimer) clearInterval(scanTimer);
+
+  // Amostragem a cada 900ms para alta fluidez sem sobrecarregar a rede
+  scanTimer = setInterval(async () => {
+    if (isProcessingFrame || !scannerVideo.videoWidth) return;
+    isProcessingFrame = true;
+
+    try {
+      // 1. Captura o frame atual do vídeo em um canvas temporário
+      const captureCanvas = document.createElement('canvas');
+      const targetW = 960;
+      const targetH = Math.round((scannerVideo.videoHeight * targetW) / scannerVideo.videoWidth);
+      captureCanvas.width = targetW;
+      captureCanvas.height = targetH;
+      const ctx = captureCanvas.getContext('2d');
+      ctx.drawImage(scannerVideo, 0, 0, targetW, targetH);
+
+      // Converte para Blob JPEG leve (~150KB)
+      const frameBlob = await new Promise(res => captureCanvas.toBlob(res, 'image/jpeg', 0.8));
+
+      // 2. Prepara requisição para a API
+      const backendUrl = apiUrlInput.value.replace(/\/$/, '');
+      const formData = new FormData();
+      formData.append('table_file', frameBlob, 'frame.jpg');
+
+      if (boardBlob && hasSelectedBoard) {
+        formData.append('board_file', boardBlob, 'board.jpg');
+        formData.append('board_x_ratio', boardPercentX);
+        formData.append('board_y_ratio', boardPercentY);
+      }
+
+      if (boxBlob) {
+        formData.append('box_file', boxBlob, 'box.jpg');
+        formData.append('target_x_ratio', targetPercentX);
+        formData.append('target_y_ratio', targetPercentY);
+      }
+
+      const res = await fetch(`${backendUrl}/api/find-piece`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        renderARMatch(data, targetW, targetH);
+      } else {
+        clearAROverlay();
+      }
+
+    } catch (e) {
+      // Frame ignorado silenciosamente para manter streaming contínuo
+    } finally {
+      isProcessingFrame = false;
+    }
+  }, 900);
+}
+
+function renderARMatch(data, frameW, frameH) {
+  const overlay = scannerOverlay;
+  overlay.width = scannerVideo.clientWidth;
+  overlay.height = scannerVideo.clientHeight;
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const scaleX = overlay.width / frameW;
+  const scaleY = overlay.height / frameH;
+
+  const [bx, by, bw, bh] = data.bbox;
+  const [cx, cy] = data.centroid;
+
+  const screenCx = cx * scaleX;
+  const screenCy = cy * scaleY;
+  const screenW = bw * scaleX;
+  const screenH = bh * scaleY;
+  const radius = Math.max(screenW, screenH) * 0.9;
+
+  // Círculo verde neon pulsante no visor
+  ctx.beginPath();
+  ctx.arc(screenCx, screenCy, radius, 0, 2 * Math.PI);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#10b981';
+  ctx.shadowColor = '#10b981';
+  ctx.shadowBlur = 18;
+  ctx.stroke();
+
+  // Mira central
+  ctx.beginPath();
+  ctx.moveTo(screenCx - 20, screenCy);
+  ctx.lineTo(screenCx + 20, screenCy);
+  ctx.moveTo(screenCx, screenCy - 20);
+  ctx.lineTo(screenCx, screenCy + 20);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+
+  // Feedback auditivo e tátil
+  playSuccessChime();
+  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+
+  // Alerta Visual no HUD
+  scannerLockAlert.classList.remove('hidden');
+  let detailText = `Girar ${data.rotation_deg}° para encaixar`;
+  if (data.shape_similarity) {
+    detailText += ` • Encaixe: ${data.shape_similarity}%`;
+  }
+  scannerLockDetails.innerText = detailText;
+  scannerStatusText.innerText = '🎯 PEÇA ENCONTRADA NA MIRA! Segure a câmera estável.';
+}
+
+function clearAROverlay() {
+  const overlay = scannerOverlay;
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  scannerLockAlert.classList.add('hidden');
+  scannerStatusText.innerText = 'Rastreando mesa... Aproxime ou afaste a câmera suavemente.';
+}
 
 // Inicia conexão do Supabase ao carregar página
 window.addEventListener('DOMContentLoaded', () => {
