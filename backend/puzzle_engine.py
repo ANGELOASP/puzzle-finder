@@ -38,6 +38,12 @@ MASK_SMOOTH = 0.03
 # Corpo (px) abaixo do qual a inclinação é medida pela colinearidade, numa máscara ampliada até SMALL_BODY_UPSCALE
 SMALL_BODY = 80.0
 SMALL_BODY_UPSCALE = 120.0
+# Histerese da máscara: uma mancha só é peça se algum ponto passa de max(MIN, FACTOR × limiar)
+HYSTERESIS_FACTOR = 2.5
+HYSTERESIS_MIN = 20.0
+# Com o tamanho da peça (4 r): fechamento da parte forte e alcance do limiar baixo além dela (fração)
+STRONG_CLOSE = 0.3
+STRONG_REACH = 0.15
 # Lado (px) da 1ª passada, que só mede o tamanho das peças
 FIRST_PASS_SIDE = 1200.0
 # Cor pesa mais que luz: reflexos mudam a luminância, peças mudam a cor
@@ -360,8 +366,27 @@ class PuzzleEngine:
             thr = max(8.0, 2.5 * noise)
             bgm = d < thr * 0.5
         bg = cv2.resize(bg, (w, h), interpolation=cv2.INTER_LINEAR)
-        fg = (_lab_dist(lab, bg) > thr).astype(np.uint8) * 255
-        return fg
+        dist = _lab_dist(lab, bg)
+        fg = (dist > thr).astype(np.uint8)
+        # Histerese: a silhueta vem do limiar baixo, mas só fica a mancha que tem algum ponto de
+        # contraste forte. Gradiente de luz na folha ou na mesa (uma ponta mais quente, canto mais
+        # escuro) passa do limiar baixo em áreas grandes, mas é fraco em toda parte; peça nunca é
+        # (cor e desenho diferentes do fundo)
+        strong = (dist > max(HYSTERESIS_MIN, HYSTERESIS_FACTOR * thr)).astype(np.uint8)
+        if piece_size:
+            # ... e, com o tamanho da peça conhecido, o limiar baixo só vale rente à parte forte: a
+            # borda da peça fica precisa, e um gradiente de luz encostado numa peça não gruda nela.
+            # (O fechamento tapa detalhes claros do desenho, que não passam do limiar forte.)
+            kc = int(max(3, round(STRONG_CLOSE * piece_size))) | 1
+            kd = int(max(3, round(STRONG_REACH * piece_size))) | 1
+            near = cv2.morphologyEx(strong, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kc, kc)))
+            near = cv2.dilate(near, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kd, kd)))
+            fg &= near
+        n, cc = cv2.connectedComponents(fg, connectivity=8)
+        keep = np.zeros(n, bool)
+        keep[np.unique(cc[strong > 0])] = True
+        keep[0] = False
+        return keep[cc].astype(np.uint8) * 255
 
     def _deskew_local(self, crop_bgr, crop_mask):
         """_deskew a partir do recorte da peça (evita máscaras do tamanho da foto)."""

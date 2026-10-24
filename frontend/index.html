@@ -95,6 +95,79 @@
     .toast-enter { animation: toast-in 180ms ease-out; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
 
+    /* ---------- Componentes da área de trabalho ---------- */
+    .panel { background: rgb(15 23 42); border-radius: 1rem; padding: 1rem; box-shadow: inset 0 0 0 1px rgb(30 41 59); }
+    .btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 3rem; padding: 0 1.1rem;
+      border-radius: .85rem; background: rgb(52 211 153); color: rgb(2 6 23); font-weight: 800; font-size: .95rem; transition: transform .12s, background .15s; }
+    .btn-primary:hover { background: rgb(110 231 183); }
+    .btn-primary:active { transform: scale(.98); }
+    .btn-primary:disabled { background: rgb(30 41 59); color: rgb(100 116 139); cursor: not-allowed; transform: none; }
+    .btn-quiet { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 2.75rem; padding: 0 .95rem;
+      border-radius: .85rem; background: rgb(2 6 23); color: rgb(226 232 240); font-weight: 650; font-size: .875rem;
+      box-shadow: inset 0 0 0 1px rgb(51 65 85); transition: box-shadow .15s, transform .12s; }
+    .btn-quiet:hover { box-shadow: inset 0 0 0 1px rgb(100 116 139); }
+    .btn-quiet:active { transform: scale(.98); }
+    .btn-quiet:disabled { color: rgb(100 116 139); cursor: not-allowed; }
+    button:focus-visible, .btn-primary:focus-visible, .btn-quiet:focus-visible { outline: 2px solid rgb(52 211 153); outline-offset: 2px; }
+
+    /* Assistente: passo feito (verde), atual (realçado) e por fazer */
+    [hidden] { display: none !important; }
+    .wz-step { border-radius: 1rem; background: rgb(15 23 42); box-shadow: inset 0 0 0 1px rgb(30 41 59); overflow: hidden; }
+    .wz-step[data-state="current"] { box-shadow: inset 0 0 0 1.5px rgb(52 211 153 / .55); }
+    .wz-head { width: 100%; display: flex; align-items: center; gap: .75rem; padding: .8rem .9rem; min-height: 3.5rem; }
+    .wz-num { width: 1.9rem; height: 1.9rem; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center; font-weight: 800; font-size: .85rem;
+      background: rgb(30 41 59); color: rgb(203 213 225); }
+    .wz-step[data-state="current"] .wz-num { background: rgb(52 211 153); color: rgb(2 6 23); }
+    .wz-step[data-state="done"] .wz-num { background: rgb(52 211 153 / .15); color: rgb(110 231 183); }
+    .wz-step[data-state="done"] .wz-num::before { content: "✓"; }
+    .wz-step[data-state="done"] .wz-num { font-size: 0; }
+    .wz-step[data-state="done"] .wz-num::before { font-size: .9rem; }
+    .wz-status { display: block; margin-top: .15rem; font-size: .78rem; color: rgb(148 163 184); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wz-step[data-state="done"] .wz-status { color: rgb(110 231 183); }
+    .wz-chev { color: rgb(100 116 139); transition: transform .2s; }
+    .wz-head[aria-expanded="true"] .wz-chev { transform: rotate(180deg); }
+    .wz-body { padding: 0 .9rem .9rem; display: flex; flex-direction: column; gap: .75rem; }
+
+    /* Abas buraco → peça / peças → mapa */
+    .seg { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem; padding: .25rem; border-radius: 1rem; background: rgb(15 23 42); box-shadow: inset 0 0 0 1px rgb(30 41 59); }
+    .seg button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .05rem; min-height: 3.25rem; padding: .35rem .5rem;
+      border-radius: .8rem; color: rgb(148 163 184); font-size: .9rem; line-height: 1.15; transition: background .15s, color .15s; }
+    .seg button[aria-selected="true"] { background: rgb(30 41 59); color: rgb(241 245 249); box-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 6px 18px -10px rgb(0 0 0 / .8); }
+    .seg-sub { font-size: .72rem; font-weight: 500; color: rgb(100 116 139); }
+    .seg button[aria-selected="true"] .seg-sub { color: rgb(110 231 183); }
+
+    /* Marcas das peças localizadas sobre o mapa (uma célula cada) */
+    .mark { position: absolute; border-radius: 22%; box-shadow: 0 0 0 1.5px currentColor, 0 0 10px currentColor; background: color-mix(in srgb, currentColor 35%, transparent); }
+    .mark-sure { color: rgb(52 211 153); }
+    .mark-maybe { color: rgb(251 191 36); }
+    .mark-active { color: rgb(255 255 255); z-index: 2; }
+
+    /* Peças localizadas, por região */
+    .tile { position: relative; width: 4.25rem; height: 4.25rem; border-radius: .8rem; overflow: hidden; background: rgb(2 6 23);
+      box-shadow: inset 0 0 0 1px rgb(51 65 85); transition: transform .12s, box-shadow .15s; }
+    .tile:hover { box-shadow: inset 0 0 0 1px rgb(148 163 184); }
+    .tile:active { transform: scale(.96); }
+    .tile img { width: 100%; height: 100%; object-fit: contain; }
+    .tile-tag { position: absolute; left: .2rem; bottom: .2rem; padding: 0 .3rem; border-radius: .35rem; font-size: .66rem; font-weight: 800;
+      font-variant-numeric: tabular-nums; background: rgb(2 6 23 / .82); color: rgb(226 232 240); }
+    .tile[data-conf="sure"] { box-shadow: inset 0 0 0 2px rgb(52 211 153); }
+    .tile[data-conf="maybe"] { box-shadow: inset 0 0 0 1.5px rgb(251 191 36 / .8); }
+    .tile[data-conf="sure"] .tile-tag { background: rgb(52 211 153); color: rgb(2 6 23); }
+    .zone { display: inline-grid; grid-template-columns: repeat(3, .45rem); gap: 2px; }
+    .zone i { width: .45rem; height: .45rem; border-radius: 2px; background: rgb(51 65 85); }
+    .zone i.on { background: rgb(52 211 153); }
+
+    /* Comparar e confirmar */
+    #compareDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    @media (min-width: 768px) { #compareDialog { width: 46rem; height: auto; max-height: 92vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
+    .cmp-frame { aspect-ratio: 1; border-radius: 1rem; overflow: hidden; background: rgb(15 23 42); display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgb(30 41 59); }
+    .cmp-frame canvas, .cmp-frame img { max-width: 100%; max-height: 100%; }
+    #cmpPiece { transition: transform .35s cubic-bezier(.2,.8,.2,1); }
+    .chip { display: inline-flex; align-items: center; gap: .35rem; height: 1.75rem; padding: 0 .65rem; border-radius: 999px; font-size: .78rem; font-weight: 700; }
+    .chip-sure { background: rgb(52 211 153 / .14); color: rgb(110 231 183); }
+    .chip-maybe { background: rgb(251 191 36 / .14); color: rgb(252 211 77); }
+    .chip-low { background: rgb(51 65 85 / .6); color: rgb(203 213 225); }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
@@ -123,6 +196,10 @@
     <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
     <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
   </svg>
 
@@ -223,12 +300,6 @@
       <span id="apiNoticeText">Acordando o servidor de análise… a primeira busca pode levar até 1 minuto.</span>
     </div>
 
-    <!-- Abertura -->
-    <section class="mt-2 mb-6">
-      <h1 class="text-3xl md:text-5xl font-extrabold tracking-tight leading-[1.05]">Qual peça está faltando?</h1>
-      <p class="text-slate-400 text-[15px] md:text-lg mt-2 max-w-xl">Marque onde ela vai e aponte a câmera para as peças soltas. A gente mostra qual encaixa e quanto girar.</p>
-    </section>
-
     <!-- Quebra-cabeça ativo + progresso -->
     <section class="mb-8 p-4 bg-slate-900 ring-1 ring-inset ring-slate-800 rounded-2xl">
       <div class="flex flex-col sm:flex-row sm:items-end gap-3">
@@ -259,59 +330,44 @@
       </div>
     </section>
 
-    <!-- Etapa 1: onde a peça vai -->
-    <section aria-labelledby="step1Title" class="mb-8">
-      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
-        <h2 id="step1Title" class="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2.5">
-          <span class="w-7 h-7 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center text-sm font-extrabold">1</span>
-          <span id="step1Text">Escolha a peça que falta</span>
-        </h2>
-        <span id="step1Sub" class="text-sm text-slate-400">no mapa ou tocando na imagem da caixa</span>
+    <!-- PREPARAÇÃO: caixa → tabuleiro → peças (só quebra-cabeças com grade) -->
+    <section id="setupWizard" class="hidden mb-6" aria-labelledby="wizardTitle">
+      <div class="flex items-baseline justify-between gap-3 mb-2.5">
+        <h2 id="wizardTitle" class="text-base font-bold tracking-tight">Preparação</h2>
+        <span id="wizardProgress" class="text-xs font-semibold text-slate-400 tabular-nums"></span>
       </div>
-
-      <!-- MAPA POR GRADE (quebra-cabeça com colunas × linhas cadastradas) -->
-      <article id="gridCard" class="hidden bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl mb-4">
-        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-1">
-          <h3 class="font-bold text-base">Mapa do quebra-cabeça</h3>
-          <span id="gridCounts" class="text-sm font-semibold text-slate-300 tabular-nums"></span>
-        </div>
-        <p id="gridHint" class="text-sm text-slate-400 mb-3">Toque na peça que falta ou digite o número dela. Escaneie o tabuleiro para o mapa mostrar o que já está montado.</p>
-
-        <div id="gridSetup" class="hidden p-4 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 text-sm text-slate-300">
-          <p class="mb-3">Para criar o mapa, marque os 4 cantos da arte na foto da caixa.</p>
-          <button type="button" id="btnSetCorners" class="h-11 px-4 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm">Marcar cantos da arte</button>
-        </div>
-
-        <div id="mapContainer" class="hidden w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
-          <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
-            <div class="flex items-center gap-1">
-              <button id="btnMapZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
-              <button id="btnMapZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
-              <button id="btnMapZoomReset" type="button" aria-label="Enquadrar o mapa inteiro" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
-              <span id="mapZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
+      <ol class="wz grid gap-2 md:grid-cols-3 md:items-start">
+        <li class="wz-step" id="stepBox" data-state="todo">
+          <button type="button" class="wz-head" aria-expanded="false" aria-controls="stepBoxBody">
+            <span class="wz-num" aria-hidden="true">1</span>
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block font-bold text-[15px] leading-tight">Caixa</span>
+              <span id="stepBoxStatus" class="wz-status">Marque os cantos da arte</span>
+            </span>
+            <svg class="icon w-4 h-4 wz-chev"><use href="#i-chevron"/></svg>
+          </button>
+          <div id="stepBoxBody" class="wz-body" hidden>
+            <p class="text-sm text-slate-400">A foto da caixa vem do cadastro. Marque os 4 cantos da arte: o app endireita a imagem e divide nas colunas × linhas cadastradas.</p>
+            <div id="gridSetup" class="hidden">
+              <button type="button" id="btnSetCorners" class="btn-primary w-full">Marcar cantos da arte</button>
             </div>
-            <button type="button" id="btnEditCorners" class="h-10 px-3 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800">Ajustar cantos</button>
-          </div>
-          <div id="mapViewport" class="viewport-surface relative w-full h-72 md:h-96 overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
-            <div id="mapTransformLayer" class="relative inline-block origin-top-left">
-              <img id="mapImage" alt="Mapa da arte com a grade de peças" class="block max-w-full max-h-72 md:max-h-96 object-contain pointer-events-none">
-              <div id="mapPin" class="pin hidden"></div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" id="btnEditCorners" class="btn-quiet">Ajustar cantos</button>
+              <button type="button" id="btnBoxPhoto" class="btn-quiet">Trocar foto da caixa</button>
             </div>
           </div>
-          <p class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Peças claras ainda faltam; escurecidas já estão montadas. Amplie para tocar com precisão.</p>
-        </div>
-
-        <div class="mt-3 flex flex-wrap items-end gap-3">
-          <div>
-            <label for="cellNumber" class="text-xs font-medium text-slate-400 block mb-1.5">Peça nº</label>
-            <input type="number" id="cellNumber" min="1" step="1" inputmode="numeric" placeholder="ex.: 1024" class="w-36 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
-          </div>
-          <p id="cellInfo" class="h-11 flex items-center text-sm text-slate-300">Nenhuma peça escolhida</p>
-          <button type="button" id="btnToggleCell" class="hidden h-11 px-3 rounded-xl text-sm font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700"></button>
-        </div>
-
-        <div class="mt-4 pt-4 border-t border-slate-800">
-          <p class="text-sm font-semibold mb-2">Escanear o tabuleiro</p>
+        </li>
+        <li class="wz-step" id="stepBoard" data-state="todo">
+          <button type="button" class="wz-head" aria-expanded="false" aria-controls="stepBoardBody">
+            <span class="wz-num" aria-hidden="true">2</span>
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block font-bold text-[15px] leading-tight">Tabuleiro</span>
+              <span id="stepBoardStatus" class="wz-status">Fotografe o que já está montado</span>
+            </span>
+            <svg class="icon w-4 h-4 wz-chev"><use href="#i-chevron"/></svg>
+          </button>
+          <div id="stepBoardBody" class="wz-body" hidden>
+            <p class="text-sm text-slate-400">Foto de cima, com os 4 cantos do quebra-cabeça visíveis. Depois você marca os cantos e toca numa área vazia. O app sobrepõe a caixa e marca o que falta. Blocos montados fora do lugar final contam como faltando.</p>
           <div class="grid grid-cols-2 gap-2">
             <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200">
               <svg class="icon w-[18px] h-[18px]"><use href="#i-camera"/></svg> Tirar foto
@@ -322,8 +378,7 @@
               <input type="file" id="scanInputGallery" accept="image/*" class="sr-only">
             </label>
           </div>
-          <p class="text-xs text-slate-500 mt-2">Foto de cima, com os 4 cantos do quebra-cabeça visíveis. Depois você marca os cantos e toca numa área vazia. Blocos montados fora do lugar final ainda contam como faltando.</p>
-          <div id="scanLoading" class="hidden mt-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+                    <div id="scanLoading" class="hidden mt-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
             <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
             <span class="text-sm text-slate-200" id="scanLoadingText">Analisando o tabuleiro…</span>
           </div>
@@ -331,11 +386,97 @@
             <summary class="cursor-pointer text-sm font-semibold text-slate-300 hover:text-white h-10 flex items-center">Ver a análise do tabuleiro</summary>
             <img id="scanOverlay" alt="Tabuleiro analisado: vermelho = faltando" class="mt-2 w-full rounded-xl ring-1 ring-inset ring-slate-800">
           </details>
+          </div>
+        </li>
+        <li class="wz-step" id="stepPieces" data-state="todo">
+          <button type="button" class="wz-head" aria-expanded="false" aria-controls="stepPiecesBody">
+            <span class="wz-num" aria-hidden="true">3</span>
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block font-bold text-[15px] leading-tight">Peças soltas</span>
+              <span id="stepPiecesStatus" class="wz-status">Fotos sobre folha branca</span>
+            </span>
+            <svg class="icon w-4 h-4 wz-chev"><use href="#i-chevron"/></svg>
+          </button>
+          <div id="stepPiecesBody" class="wz-body" hidden>
+            <div id="photosSlotGrid"></div>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- ÁREA DE TRABALHO: o mapa, com as duas direções de busca -->
+    <section id="gridCard" class="hidden mb-8" aria-label="Mapa e busca">
+      <div class="seg mb-3" role="tablist" aria-label="Modo de busca">
+        <button type="button" role="tab" id="tabFind" aria-selected="true" aria-controls="panelFind">
+          <span class="font-bold">Achar uma peça</span><span class="seg-sub">buraco → peça</span>
+        </button>
+        <button type="button" role="tab" id="tabLocate" aria-selected="false" aria-controls="panelLocate" tabindex="-1">
+          <span class="font-bold">Onde vai cada peça</span><span class="seg-sub">peças → mapa</span>
+        </button>
+      </div>
+
+        <div id="mapContainer" class="hidden w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
+            <div class="flex items-center gap-1">
+              <button id="btnMapZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+              <button id="btnMapZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+              <button id="btnMapZoomReset" type="button" aria-label="Enquadrar o mapa inteiro" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
+              <span id="mapZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
+            </div>
+            <span id="gridCounts" class="px-2 text-xs font-semibold text-slate-300 tabular-nums text-right"></span>
+          </div>
+          <div id="mapViewport" class="viewport-surface relative w-full min-h-[12rem] overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
+            <div id="mapTransformLayer" class="relative inline-block origin-top-left">
+              <img id="mapImage" alt="Mapa da arte com a grade de peças" class="block max-w-full max-h-[56vh] md:max-h-[62vh] object-contain pointer-events-none">
+              <div id="mapMarks" class="absolute inset-0 pointer-events-none" aria-hidden="true"></div>
+              <div id="mapPin" class="pin hidden"></div>
+            </div>
+          </div>
+          <p id="mapLegend" class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Peças claras ainda faltam; escurecidas já estão montadas. Amplie para tocar com precisão.</p>
         </div>
-      </article>
 
-      <div id="legacyTarget" class="grid grid-cols-1 gap-4 max-w-2xl">
 
+      <!-- Buraco → peça -->
+      <div id="panelFind" role="tabpanel" aria-labelledby="tabFind" class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-start">
+        <div class="panel">
+          <div class="flex flex-wrap items-end gap-3">
+            <div>
+              <label for="cellNumber" class="text-xs font-medium text-slate-400 block mb-1.5">Peça nº</label>
+              <input type="number" id="cellNumber" min="1" step="1" inputmode="numeric" placeholder="ex.: 1024" class="w-36 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
+            </div>
+            <p id="cellInfo" class="h-11 flex items-center text-sm text-slate-300">Toque no mapa ou digite o número</p>
+          </div>
+          <button type="button" id="btnToggleCell" class="hidden mt-3 h-10 px-3 rounded-xl text-sm font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700"></button>
+        </div>
+        <div id="findSlotGrid" class="panel"></div>
+      </div>
+
+      <!-- Peças → mapa -->
+      <div id="panelLocate" role="tabpanel" aria-labelledby="tabLocate" class="mt-3" hidden>
+        <div class="panel flex flex-col gap-3">
+          <p id="locateIntro" class="text-sm text-slate-400">Fotografe as peças soltas (passo 3) e o app mostra no mapa onde cada uma vai, agrupadas por região.</p>
+          <button type="button" id="btnLocate" class="btn-primary w-full sm:w-auto sm:self-start" disabled>
+            <svg class="icon w-[18px] h-[18px]"><use href="#i-target"/></svg>
+            <span id="btnLocateText">Localizar as peças das fotos</span>
+          </button>
+          <div id="locateLoading" class="hidden p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+            <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
+            <span class="text-sm text-slate-200" id="locateLoadingText">Separando as peças e comparando com a caixa…</span>
+          </div>
+          <div id="locateSummary" class="hidden flex flex-wrap gap-2 text-sm" aria-live="polite"></div>
+        </div>
+        <div id="locateGroups" class="mt-3 grid gap-2"></div>
+      </div>
+    </section>
+
+    <!-- MODO AVULSO: quebra-cabeça sem grade (ponto na caixa) -->
+    <section id="legacyTarget" class="grid grid-cols-1 gap-4 mb-8" aria-labelledby="step1Title">
+      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 id="step1Title" class="text-xl md:text-2xl font-bold tracking-tight"><span id="step1Text">Escolha a peça que falta</span></h2>
+        <span id="step1Sub" class="text-sm text-slate-400">tocando na imagem da caixa</span>
+      </div>
+      <p class="text-sm text-slate-400 -mt-2">Cadastre colunas e linhas no quebra-cabeça (Editar) para usar o mapa, o escaneamento do tabuleiro e a busca pelas peças.</p>
+      <div class="grid gap-4 md:grid-cols-2 md:items-start">
         <!-- Imagem da caixa -->
         <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
           <div class="flex items-start justify-between gap-3 mb-1">
@@ -379,48 +520,24 @@
             <p id="boxHint" class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Toque no ponto da arte. Amplie para marcar com precisão.</p>
           </div>
         </article>
+        <div class="panel flex flex-col gap-3">
+          <div id="photosSlotLegacy"></div>
+          <div id="findSlotLegacy"></div>
+        </div>
       </div>
     </section>
 
-    <!-- Etapa 2: procurar na mesa -->
-    <section aria-labelledby="step2Title" class="mb-8">
-      <h2 id="step2Title" class="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2.5 mb-3">
-        <span class="w-7 h-7 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center text-sm font-extrabold">2</span>
-        Procure nas peças soltas
-      </h2>
-
-      <div class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 md:p-5 rounded-2xl grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-5">
-        <div class="flex flex-col gap-3">
-          <!-- O que falta para buscar -->
-          <ul class="space-y-1.5 text-sm" aria-label="O que falta para buscar">
-            <li id="checkTarget" class="flex items-center gap-2 text-slate-400">
-              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
-              <span>Marque o buraco ou um ponto na caixa</span>
-            </li>
-            <li class="flex items-center gap-2 text-slate-400" id="checkTable">
-              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
-              <span>Câmera ao vivo ou fotos das peças</span>
-            </li>
-          </ul>
-
-          <!-- Scanner em tempo real -->
-          <button id="btnOpenRealtimeScanner" class="w-full h-14 px-4 flex items-center justify-center gap-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-base transition active:scale-[0.98] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed">
-            <svg class="icon"><use href="#i-scan"/></svg>
-            Procurar com a câmera ao vivo
-          </button>
-
-          <div class="flex items-center gap-3 text-xs text-slate-500 uppercase tracking-wider">
-            <span class="h-px flex-1 bg-slate-800"></span>ou<span class="h-px flex-1 bg-slate-800"></span>
-          </div>
-
+    <!-- Blocos compartilhados (movidos para o passo 3 / painel de busca, ou para o modo avulso) -->
+    <div id="photosBlock" class="flex flex-col gap-3">
           <!-- Fotos das peças: padrão é a folha A4 (escala, perspectiva e branco de referência) -->
           <div class="p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 text-sm">
-            <p class="font-semibold text-slate-200">Fotos das peças sobre folha A4</p>
+            <p class="font-semibold text-slate-200">Fotos das peças sobre folha branca</p>
             <ol class="mt-1.5 space-y-1 text-xs text-slate-400 list-decimal list-inside leading-relaxed">
-              <li>Coloque as peças <strong class="text-slate-300">viradas para cima</strong> numa folha A4 branca, <strong class="text-slate-300">sem uma encostar na outra</strong>.</li>
-              <li>Fotografe <strong class="text-slate-300">de cima</strong>, com a folha inteira na foto e sem reflexo de lâmpada.</li>
+              <li>Arrume as peças <strong class="text-slate-300">viradas para cima</strong> em fileiras numa folha A4 branca, <strong class="text-slate-300">sem uma encostar na outra</strong>.</li>
+              <li>Fotografe <strong class="text-slate-300">bem de cima</strong>, enquadrando a folha (ela pode ocupar a foto toda) e sem reflexo de lâmpada.</li>
               <li>Encheu a folha? Troque as peças e tire outra foto: dá para anexar <span id="tablePhotosMax">8</span>.</li>
             </ol>
+            <p class="mt-1.5 text-xs text-slate-500">O branco da folha corrige a cor da luz. Se a folha inteira aparecer, com a mesa em volta, ela também serve de régua.</p>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200 transition">
@@ -434,9 +551,37 @@
               <input type="file" id="tableInputGallery" accept="image/*" multiple class="sr-only">
             </label>
           </div>
-          <button id="btnFind" disabled class="w-full h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-100 hover:bg-white text-slate-950 text-sm font-bold transition active:scale-[0.98] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed">
+        <!-- Fotos anexadas -->
+        <div id="tableContainer" class="hidden flex-col gap-2">
+          <p class="text-sm text-slate-300"><span id="tablePhotosCount">0 fotos</span> <button type="button" id="btnClearTablePhotos" class="ml-2 text-xs text-slate-400 underline underline-offset-2 hover:text-slate-200">remover todas</button></p>
+          <ul id="tablePhotosList" class="grid grid-cols-3 sm:grid-cols-4 gap-2" aria-label="Fotos das peças anexadas"></ul>
+        </div>
+        <div id="tablePlaceholder" class="hidden md:flex rounded-xl border border-dashed border-slate-800 items-center justify-center min-h-[5rem] p-4 text-center text-sm text-slate-500">
+          As fotos das peças aparecem aqui. Uma folha branca por foto, peças em fileiras sem encostar.
+        </div>
+    </div>
+    <div id="findControls" class="flex flex-col gap-3">
+          <!-- O que falta para buscar -->
+          <ul class="space-y-1.5 text-sm" aria-label="O que falta para buscar">
+            <li id="checkTarget" class="flex items-center gap-2 text-slate-400">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
+              <span>Marque o buraco ou um ponto na caixa</span>
+            </li>
+            <li class="flex items-center gap-2 text-slate-400" id="checkTable">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
+              <span>Câmera ao vivo ou fotos das peças</span>
+            </li>
+          </ul>
+
+          <button id="btnFind" disabled class="btn-primary w-full">
             <svg class="icon w-[18px] h-[18px]"><use href="#i-search"/></svg>
             <span id="btnFindText">Encontrar peça nas fotos</span>
+          </button>
+
+          <!-- Scanner em tempo real -->
+          <button id="btnOpenRealtimeScanner" class="btn-quiet w-full">
+            <svg class="icon w-[18px] h-[18px]"><use href="#i-scan"/></svg>
+            Câmera ao vivo
           </button>
 
           <!-- Indicador de Carregamento -->
@@ -447,18 +592,7 @@
               <p class="text-xs text-slate-400 mt-0.5" id="loadingSubtext">Isso leva alguns segundos.</p>
             </div>
           </div>
-        </div>
-
-        <!-- Fotos anexadas -->
-        <div id="tableContainer" class="hidden flex-col gap-2">
-          <p class="text-sm text-slate-300"><span id="tablePhotosCount">0 fotos</span> <button type="button" id="btnClearTablePhotos" class="ml-2 text-xs text-slate-400 underline underline-offset-2 hover:text-slate-200">remover todas</button></p>
-          <ul id="tablePhotosList" class="grid grid-cols-3 sm:grid-cols-4 gap-2" aria-label="Fotos das peças anexadas"></ul>
-        </div>
-        <div id="tablePlaceholder" class="hidden md:flex rounded-xl border border-dashed border-slate-800 items-center justify-center min-h-[12rem] p-6 text-center text-sm text-slate-500">
-          As fotos das peças aparecem aqui. Uma folha A4 por foto, peças sem encostar.
-        </div>
-      </div>
-    </section>
+    </div>
 
     <!-- Resultados -->
     <section id="resultSection" aria-live="polite" class="hidden bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 md:p-6 rounded-2xl mb-8">
@@ -653,6 +787,53 @@
   </dialog>
 
   <!-- Editor de cantos: marca a arte (caixa) ou o tabuleiro para endireitar a perspectiva -->
+  <!-- Comparar e confirmar: arte da caixa × peça da foto, já girada -->
+  <dialog id="compareDialog" aria-labelledby="cmpTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col h-full max-h-[100dvh] md:max-h-[92vh]">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="min-w-0 flex-1">
+          <p id="cmpKicker" class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500"></p>
+          <h2 id="cmpTitle" class="text-xl md:text-2xl font-extrabold tracking-tight leading-tight"></h2>
+          <p id="cmpSub" class="text-sm text-slate-400 mt-0.5"></p>
+        </div>
+        <button type="button" id="cmpClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </header>
+      <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+        <div class="grid grid-cols-2 gap-3">
+          <figure class="flex flex-col gap-1.5">
+            <div class="cmp-frame"><canvas id="cmpArt" width="360" height="360" aria-label="Arte da caixa em volta da célula"></canvas></div>
+            <figcaption class="text-xs text-slate-400 text-center"><span class="font-semibold text-slate-200">Na caixa</span> · <span id="cmpArtCap"></span></figcaption>
+          </figure>
+          <figure class="flex flex-col gap-1.5">
+            <div class="cmp-frame"><img id="cmpPiece" alt="Peça encontrada na foto, já girada como deve encaixar"></div>
+            <figcaption class="text-xs text-slate-400 text-center"><span class="font-semibold text-slate-200">Na foto</span> · <span id="cmpPieceCap"></span></figcaption>
+          </figure>
+        </div>
+        <div class="flex items-center gap-3 p-3 rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800">
+          <svg class="icon text-emerald-300"><use href="#i-rotate"/></svg>
+          <p id="cmpRotation" class="font-bold text-base leading-tight flex-1"></p>
+          <span id="cmpBadge" class="chip"></span>
+        </div>
+        <p id="cmpNote" class="hidden text-xs text-amber-300"></p>
+        <div class="flex items-center justify-between gap-2">
+          <button type="button" id="cmpPrev" class="btn-quiet"><svg class="icon w-4 h-4"><use href="#i-left"/></svg>Anterior</button>
+          <span id="cmpPager" class="text-sm text-slate-400 tabular-nums"></span>
+          <button type="button" id="cmpNext" class="btn-quiet">Próxima<svg class="icon w-4 h-4"><use href="#i-right"/></svg></button>
+        </div>
+        <details id="cmpPhotoWrap" class="rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800">
+          <summary class="cursor-pointer h-11 px-3 flex items-center text-sm font-semibold text-slate-300">Ver onde ela está na foto</summary>
+          <canvas id="cmpPhoto" class="block w-full rounded-b-xl" aria-label="Recorte da foto das peças com a candidata circulada"></canvas>
+        </details>
+      </div>
+      <footer class="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-slate-800 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2">
+        <button type="button" id="cmpNo" class="btn-quiet h-12">Não é</button>
+        <button type="button" id="cmpYes" class="btn-primary h-12"><svg class="icon w-[18px] h-[18px]"><use href="#i-check"/></svg><span id="cmpYesText">É essa! Encaixei</span></button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog id="cornerDialog" aria-labelledby="cornerTitle" class="bg-black text-slate-100 p-0">
     <div class="h-full flex flex-col p-3 md:p-5 gap-3" style="padding-top: max(0.75rem, env(safe-area-inset-top)); padding-bottom: max(0.75rem, env(safe-area-inset-bottom));">
       <div>
@@ -675,5 +856,6 @@
 
   <script src="grid.js"></script>
   <script src="app.js"></script>
+  <script src="workspace.js"></script>
 </body>
 </html>

@@ -41,9 +41,11 @@ KNOWN_BODY_STEPS = (0.92, 1.0, 1.08)
 MATCH_REACH = 0.3
 MIN_TEXTURE_STD = 8.0
 
-# Confiança da busca por célula (calibrada no bench sintético de peças com encaixes)
-MIN_CELL_SCORE = 0.62
-MIN_CELL_MARGIN = 0.06
+# Confiança da busca por célula ("achei" em verde). Calibrada no bench sintético com a peça PRESENTE
+# e AUSENTE da foto (no uso real a foto tem só parte das peças): nota 0,70 e margem 0,12 sobre a 2ª
+# deram 0 erros com confiança e 2/60 falsos "achei" com a peça ausente (0,62/0,06 dava 11/60)
+MIN_CELL_SCORE = 0.70
+MIN_CELL_MARGIN = 0.12
 
 SIDES = ("top", "right", "bottom", "left")
 # Formato dos lados (fração do lado do corpo): faixa do meio (aba/encaixe), faixa perto dos cantos
@@ -338,27 +340,37 @@ def side_shapes(mask):
     perto dos CANTOS (o próprio corpo). A caixa do corpo vem dos cantos, não do recorte: as abas
     aumentariam o recorte.
     """
+    return _sides_and_box(mask)[0]
+
+
+def body_box(mask):
+    """Corpo (sem abas) de uma silhueta endireitada: (cx, cy, lado) em px, ou None."""
+    return _sides_and_box(mask)[1]
+
+
+def _sides_and_box(mask):
     if mask is None:
-        return None
+        return None, None
     m = mask > 127
     ys, xs = np.nonzero(m)
     if len(xs) < 50:
-        return None
+        return None, None
     # Caixa inicial do corpo: centroide ± √área/2 (abas e encaixes se compensam na área; o recorte
     # inteiro seria até 1,5× maior que o corpo numa peça com 4 abas)
     half = 0.5 * np.sqrt(len(xs))
     box = [xs.mean() - half, ys.mean() - half, xs.mean() + half, ys.mean() + half]  # x0, y0, x1, y1
+    fallback = (float(xs.mean()), float(ys.mean()), float(2 * half))
     shapes = None
     for _ in range(3):
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         body = min(box[2] - box[0], box[3] - box[1])
         if body < 8:
-            return None
+            return None, fallback
         shapes, corner_ext = {}, {}
         for side in SIDES:
             out, inn, corner = _side_extent(m, side, cx, cy, body)
             if out is None or corner is None:
-                return None
+                return None, fallback
             # Aba: algum ponto do meio sai bem além do corpo; encaixe: algum ponto entra bem nele
             # (o meio inteiro, não só o centro: abas costumam ficar um pouco deslocadas)
             if (out - corner) / body > SIDE_SHAPE_MIN:
@@ -369,7 +381,8 @@ def side_shapes(mask):
                 shapes[side] = "flat"
             corner_ext[side] = corner
         box = [cx - corner_ext["left"], cy - corner_ext["top"], cx + corner_ext["right"], cy + corner_ext["bottom"]]
-    return shapes
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return shapes, (float(cx), float(cy), float(((box[2] - box[0]) + (box[3] - box[1])) / 2))
 
 
 def _side_extent(m, side, cx, cy, body):
@@ -531,19 +544,37 @@ def _color_similarity(h1, h2):
 
 class ColorNormalizer:
     """
-    Leva as cores da foto da mesa para as da caixa (transferência de Reinhard em Lab): média e
-    desvio de cada canal das peças viram os da arte das células que elas devem preencher. Corrige o
-    que muda entre as duas fotos (luz quente, câmera, impressão mais saturada) — no bench com fotos
-    reais, a célula certa saiu da 80ª para a 1ª-3ª posição entre 201 pela cor.
+    Leva as cores das fotos das peças para as da caixa: transferência linear de Monge-Kantorovich em
+    Lab — iguala média E covariância (não só o desvio de cada canal, como Reinhard), então corrige
+    juntas a saturação (a caixa sai ~2× mais saturada que as peças) e a rotação de tom (caixa mais
+    avermelhada). No bench com fotos reais, a célula certa saiu da 80ª para a 1ª-2ª posição entre
+    201 só pela cor (MKL 45% em 1º com a referência certa, Reinhard 39%).
     """
 
-    def __init__(self, piece_px, art_px):
-        self.mb, self.ma = piece_px.mean(0), art_px.mean(0)
-        self.k = np.clip(art_px.std(0) / (piece_px.std(0) + 1e-6), 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)
+    def __init__(self, piece_px, art_px, n_pieces=None):
+        self.ms, self.mt = piece_px.mean(0), art_px.mean(0)
+        cs, ct = np.cov(piece_px.T), np.cov(art_px.T)
+        # Poucas peças: a covariância cruzada das peças é ruído de amostra — encolhe para a diagonal
+        # (no limite vira Reinhard, canal por canal)
+        lam = COLOR_SHRINK_PIECES / (COLOR_SHRINK_PIECES + n_pieces) if n_pieces else 0.0
+        cs = (1 - lam) * cs + lam * np.diag(np.diag(cs))
+        ct = (1 - lam) * ct + lam * np.diag(np.diag(ct))
+        rs = _sqrtm(cs)
+        rs_inv = np.linalg.inv(rs)
+        t = rs_inv @ _sqrtm(rs @ ct @ rs) @ rs_inv
+        # Limita o quanto um eixo pode esticar/encolher (amostra pequena ou cores muito diferentes)
+        w, v = np.linalg.eigh((t + t.T) / 2)
+        self.t = (v @ np.diag(np.clip(w, 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)) @ v.T).astype(np.float32)
 
     def __call__(self, lab_u8):
-        out = (lab_u8.astype(np.float32) - self.mb) * self.k + self.ma
-        return np.clip(out, 0, 255).astype(np.uint8)
+        x = lab_u8.reshape(-1, 3).astype(np.float32) - self.ms.astype(np.float32)
+        out = x @ self.t.T + self.mt.astype(np.float32)
+        return np.clip(out, 0, 255).astype(np.uint8).reshape(lab_u8.shape)
+
+
+def _sqrtm(c):
+    w, v = np.linalg.eigh(c)
+    return v @ np.diag(np.sqrt(np.maximum(w, 1e-6))) @ v.T
 
 
 def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
@@ -569,12 +600,14 @@ def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
     else:
         art_px = art.reshape(-1, 3)
     art_px = art_px[rng.choice(len(art_px), min(len(art_px), 200000), replace=False)]
-    return ColorNormalizer(np.concatenate(piece_px).astype(np.float32), art_px.astype(np.float32))
+    return ColorNormalizer(np.concatenate(piece_px).astype(np.float64), art_px.astype(np.float64), len(piece_px))
 
 
 # Histograma de cor (luz, a, b) e quanto a normalização de cor pode esticar o desvio de um canal
 HIST_BINS = (4, 16, 16)
-COLOR_MAX_STRETCH = 2.0
+COLOR_MAX_STRETCH = 2.5
+# Encolhimento da covariância para a diagonal: metade com este número de peças
+COLOR_SHRINK_PIECES = 60
 # Mínimo de células faltando para usar só elas como referência de cor da arte
 COLOR_MIN_MISSING = 20
 
@@ -723,3 +756,112 @@ def draw_candidates(table_bgr, ranked, confident, ranks=None):
         cv2.circle(out, (lx, ly), int(max(tw, th) * 0.9), (0, 0, 0), -1, cv2.LINE_AA)
         cv2.putText(out, label, (lx - tw // 2, ly + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
     return out
+
+
+# ---------- Busca inversa: cada peça solta → células onde ela pode ir ----------
+# Descritor: janela de REV_WIN × o corpo (pega o começo das abas, que mostram as vizinhas) reduzida a
+# REV_GRID × REV_GRID px em Lab, nas 4 rotações. No bench sintético (40-150 peças entre ~600 células):
+# célula certa em 1º para ~75% das peças, entre as 5 primeiras para ~91%, em < 1 s.
+REV_GRID = 16
+REV_WIN = 1.3
+REV_LAB_W = np.array([0.5, 1.0, 1.0], np.float32)
+# A 1ª etapa (distância ao quadrado, vetorizada) escolhe estas células por peça; a 2ª reordena com a
+# distância exata (média do |ΔLab| por pixel, que pesa menos os pixels destoantes)
+REV_SHORTLIST = 40
+# Nota (0..1) a partir da qual a 1ª célula é dada como certa ("vai aqui"): no bench, 2/3 das peças
+# passam e 90% delas estão certas
+LOCATE_CONFIDENT = 0.9
+
+
+def _rev_cell_descs(box_rect, cols, rows):
+    """Descritor de cada célula da arte: (rows, cols, G, G, 3) em Lab."""
+    lab = cv2.cvtColor(box_rect, cv2.COLOR_BGR2LAB).astype(np.float32)
+    step = REV_GRID / REV_WIN
+    W, H = int(round(cols * step)), int(round(rows * step))
+    small = cv2.resize(lab, (W, H), interpolation=cv2.INTER_AREA)
+    pad = REV_GRID
+    sp = cv2.copyMakeBorder(small, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+    out = np.zeros((rows, cols, REV_GRID, REV_GRID, 3), np.float32)
+    for r in range(rows):
+        y0 = int(round((r + 0.5) * H / rows + pad - REV_GRID / 2))
+        for c in range(cols):
+            x0 = int(round((c + 0.5) * W / cols + pad - REV_GRID / 2))
+            out[r, c] = sp[y0:y0 + REV_GRID, x0:x0 + REV_GRID]
+    return out
+
+
+def _rev_piece_desc(piece, color_tf=None):
+    """Descritor da peça endireitada (Lab, peso da máscara) centrado no corpo, ou None."""
+    up, m = piece.get("upright"), piece.get("upright_mask")
+    if up is None or m is None:
+        return None
+    box = body_box(m)
+    if box is None:
+        return None
+    cx, cy, side = box
+    lab = cv2.cvtColor(up, cv2.COLOR_BGR2LAB)
+    if color_tf is not None:
+        lab = color_tf(lab)
+    w = cv2.erode((m > 127).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32)
+    half = REV_WIN * side / 2
+    k = REV_GRID / (2 * half)
+    M = np.float32([[k, 0, -(cx - half) * k], [0, k, -(cy - half) * k]])
+    d = cv2.warpAffine(lab.astype(np.float32), M, (REV_GRID, REV_GRID), flags=cv2.INTER_AREA)
+    wt = cv2.warpAffine(w, M, (REV_GRID, REV_GRID), flags=cv2.INTER_AREA)
+    return (d, wt) if wt.sum() > 1 else None
+
+
+def locate_pieces(box_rect, cols, rows, pieces, scan_map=None, color_tf=None, top_k=5):
+    """
+    Para cada peça, as `top_k` células mais prováveis (entre as que faltam no mapa, se houver):
+    lista paralela a `pieces` de [dict(col, row, rotation, distance, score)] ou None (peça sem silhueta).
+    `score` 0..1 relativo: 1 = bem melhor que a 2ª opção daquela peça; `rotation`: quanto girar a peça
+    (sentido horário, como no match_cell).
+    """
+    cells_desc = _rev_cell_descs(box_rect, cols, rows)
+    if scan_map and len(scan_map) == cols * rows and "0" in scan_map:
+        idx = np.array([i for i, ch in enumerate(scan_map) if ch != "1"])
+    else:
+        idx = np.arange(cols * rows)
+    C = cells_desc.reshape(cols * rows, -1, 3)[idx] * REV_LAB_W          # N × px × 3
+    Cf = C.reshape(len(idx), -1).astype(np.float64)
+    C2 = (C.astype(np.float64) ** 2).sum(-1)                              # N × px
+    results = []
+    for piece in pieces:
+        desc = _rev_piece_desc(piece, color_tf)
+        if desc is None:
+            results.append(None)
+            continue
+        d, w = desc
+        sq = np.zeros((len(idx), 4))
+        rots = []
+        for k in range(4):  # peça girada k × 90° no sentido horário
+            dk = np.rot90(d, -k).reshape(-1, 3) * REV_LAB_W
+            wk = np.rot90(w, -k).reshape(-1).astype(np.float64)
+            rots.append((dk, wk))
+            t1 = (wk * (dk.astype(np.float64) ** 2).sum(-1)).sum()
+            sq[:, k] = (t1 - 2 * (Cf @ (wk[:, None] * dk).reshape(-1)) + C2 @ wk) / max(wk.sum(), 1e-6)
+        short = np.argsort(sq.min(1))[:REV_SHORTLIST]
+        exact = np.zeros((len(short), 4))
+        for k, (dk, wk) in enumerate(rots):
+            diff = np.sqrt(((C[short] - dk[None]) ** 2).sum(-1))           # S × px
+            exact[:, k] = (diff * wk[None]).sum(1) / max(wk.sum(), 1e-6)
+        best_rot = exact.argmin(1)
+        best = exact.min(1)
+        order = np.argsort(best)
+        d1 = best[order[0]]
+        d2 = best[order[1]] if len(order) > 1 else d1 * 2
+        out = []
+        for j in order[:top_k]:
+            cell = int(idx[short[j]])
+            dist = float(best[j])
+            out.append({
+                "col": cell % cols, "row": cell // cols,
+                # rotação no sentido horário que leva a peça endireitada à orientação da arte
+                "rotation": int(best_rot[j]) * 90,
+                "distance": dist,
+                "score": float(np.clip((d2 - dist) / max(d2, 1e-6) * 4 + 0.5, 0, 1)) if j == order[0]
+                else float(np.clip(0.5 - (dist - d1) / max(d1, 1e-6), 0, 1)),
+            })
+        results.append(out)
+    return results

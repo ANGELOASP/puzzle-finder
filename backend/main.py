@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPExcept
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import grid_engine
-from paper import TablePhoto
+from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
 
 # A foto da mesa vai em alta resolução (centenas de peças pequenas): até ~3000 px ≈ 2-5 MB
@@ -14,6 +14,8 @@ MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_TABLE_SIDE = 3000
 # Fotos de peças por busca (ex.: uma folha A4 cheia por foto)
 MAX_TABLE_PHOTOS = 8
+# Lado (px) da miniatura de cada peça na busca inversa
+LOCATE_THUMB = 120
 
 app = FastAPI(title="PuzzleFinder API")
 app.add_middleware(
@@ -108,8 +110,8 @@ def check_grid(cols: int, rows: int):
     if not (2 <= cols <= 200 and 2 <= rows <= 200):
         raise HTTPException(status_code=400, detail="Grade inválida: colunas e linhas entre 2 e 200.")
 
-def cv2_to_base64_jpeg(cv2_img):
-    _, buffer = cv2.imencode('.jpg', cv2_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+def cv2_to_base64_jpeg(cv2_img, quality=85):
+    _, buffer = cv2.imencode('.jpg', cv2_img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return base64.b64encode(buffer).decode('utf-8')
 
 @app.get("/")
@@ -137,6 +139,9 @@ def segment_tables(tables, piece_mm=None):
     for i, data in enumerate(tables):
         photo = TablePhoto(img_bytes_to_cv2(data, MAX_TABLE_SIDE))
         found = engine.segment_table_pieces(photo.image)
+        # Branco de referência: a folha A4 inteira (já corrigida na foto endireitada) ou o papel/mesa
+        # clara em volta das peças quando a folha ocupa a foto toda (o padrão)
+        photo.white_ref = photo.on_paper or balance_pieces_on_background(photo.image, found) is not None
         for p in found:
             p["photo"] = i
             if photo.px_per_mm and piece_mm:
@@ -156,8 +161,17 @@ def piece_location(photos, piece):
     return photo.bbox_to_original(piece["bbox"]), [int(round(cx)), int(round(cy))]
 
 
+def piece_thumb(piece):
+    """Miniatura JPEG (base64) da peça endireitada, com o fundo da foto em volta."""
+    img = piece["upright"] if piece.get("upright") is not None else piece["crop"]
+    s = LOCATE_THUMB / float(max(img.shape[:2]))
+    img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    return cv2_to_base64_jpeg(img, quality=80)
+
+
 def photos_summary(photos):
-    return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "pieces": p.pieces} for p in photos]
+    return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "white_ref": p.white_ref,
+             "pieces": p.pieces} for p in photos]
 
 
 def fit_jpeg(img, max_side=2000):
@@ -294,6 +308,65 @@ def process_scan(box_bytes, board_bytes, cols, rows, margin, points):
     }
 
 
+@app.post("/api/locate-pieces")
+async def locate_pieces(
+    table_files: Optional[List[UploadFile]] = File(None),
+    table_file: Optional[UploadFile] = File(None),
+    box_file: UploadFile = File(...),
+    cols: int = Form(...),
+    rows: int = Form(...),
+    scan_map: Optional[str] = Form(None),
+    piece_mm: Optional[float] = Form(None),
+    top_k: int = Form(5),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """
+    Busca inversa: para CADA peça solta das fotos, as células (entre as que faltam no `scan_map`)
+    onde ela mais provavelmente vai, com a rotação. É o caminho "fotografei estas peças: onde vão?".
+    """
+    check_grid(cols, rows)
+    tables = await read_tables(table_file, table_files)
+    box_bytes = await read_upload(box_file)
+    if box_bytes is None:
+        raise HTTPException(status_code=400, detail="Envie a arte.")
+    if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
+        piece_mm = None
+    return await run_in_threadpool(process_locate_pieces, tables, box_bytes, cols, rows, scan_map, piece_mm,
+                                   max(1, min(10, top_k)))
+
+def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top_k):
+    box = img_bytes_to_cv2(box_bytes)
+    photos, pieces = segment_tables(tables, piece_mm)
+    color_tf = grid_engine.color_normalizer(pieces, box, cols, rows, scan_map)
+    located = grid_engine.locate_pieces(box, cols, rows, pieces, scan_map, color_tf, top_k=top_k)
+    out = []
+    for i, (p, cands) in enumerate(zip(pieces, located)):
+        if not cands:
+            continue
+        bbox, centroid = piece_location(photos, p)
+        shapes = grid_engine.side_shapes(p.get("upright_mask"))
+        out.append({
+            "id": i,
+            "photo": p["photo"],
+            "bbox": bbox,
+            "centroid": centroid,
+            # Peça endireitada (é ela que a rotação dos candidatos gira)
+            "thumb_base64": piece_thumb(p),
+            "sides": shapes,
+            "candidates": [{
+                "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
+                "score": round(c["score"] * 100, 1),
+            } for c in cands],
+            "confident": cands[0]["score"] >= grid_engine.LOCATE_CONFIDENT,
+        })
+    return {
+        "pieces": out,
+        "pieces_detected": len(pieces),
+        "photos": photos_summary(photos),
+        "missing_cells": scan_map.count("0") if scan_map and len(scan_map) == cols * rows else cols * rows,
+    }
+
+
 @app.post("/api/find-cell")
 async def find_cell(
     table_file: Optional[UploadFile] = File(None),
@@ -359,6 +432,8 @@ def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
             "score": round(c["score"] * 100, 1),
             "edge_ok": c["flats_ok"],
             "shape_ok": c["shape_ok"],
+            # Peça endireitada: a tela de comparação gira esta imagem por rotation_deg
+            "thumb_base64": piece_thumb(c["piece"]),
         })
     best_photo = ranked[0]["piece"]["photo"]
     result = {
