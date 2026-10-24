@@ -93,6 +93,17 @@ const Grid = (() => {
   }
 
   /**
+   * Cantos (normalizados na foto) da janela de células [col − span, col + span] × [row − span, row + span]
+   * do quebra-cabeça marcado por `corners`: a mesma perspectiva, só que em volta de uma célula.
+   */
+  function windowCorners(corners, cols, rows, col, row, span = 1) {
+    const H = homography(UNIT, corners);
+    const u0 = (col - span) / cols, u1 = (col + 1 + span) / cols;
+    const v0 = (row - span) / rows, v1 = (row + 1 + span) / rows;
+    return [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, v]) => apply(H, u, v));
+  }
+
+  /**
    * "Endireita" a área marcada: devolve um canvas com exatamente cols × rows células
    * (mais `margin` células de borda em volta, usadas para aprender a cor da mesa).
    */
@@ -359,5 +370,5 @@ const Grid = (() => {
     });
   }
 
-  return { homography, apply, loadBitmap, canvasToBlob, nativeCell, cellAspect, rectify, renderMap, cellNumber, cellFromNumber, editCorners };
+  return { homography, apply, loadBitmap, canvasToBlob, nativeCell, cellAspect, rectify, windowCorners, renderMap, cellNumber, cellFromNumber, editCorners };
 })();

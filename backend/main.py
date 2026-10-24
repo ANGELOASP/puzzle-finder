@@ -253,26 +253,36 @@ async def find_cell(
     row: int = Form(...),
     top_k: int = Form(5),
     annotate: bool = Form(True),
+    hole_file: Optional[UploadFile] = File(None),
     user_id: Optional[str] = Depends(require_user),
 ):
-    """Busca a peça da célula (col, row) da arte retificada entre as peças soltas na foto da mesa."""
+    """
+    Busca a peça da célula (col, row) da arte retificada entre as peças soltas na foto da mesa.
+    `hole_file` (opcional): o tabuleiro endireitado em volta da célula vazia (3 × 3 células, ela no
+    meio) — o formato do buraco filtra as peças pelas abas e encaixes.
+    """
     check_grid(cols, rows)
     if not (0 <= col < cols and 0 <= row < rows):
         raise HTTPException(status_code=400, detail="Peça fora da grade.")
     table_bytes, box_bytes = await read_upload(table_file), await read_upload(box_file)
     if table_bytes is None or box_bytes is None:
         raise HTTPException(status_code=400, detail="Envie a foto da mesa e a arte.")
+    hole_bytes = await read_upload(hole_file)
     return await run_in_threadpool(process_find_cell, table_bytes, box_bytes, cols, rows, col, row,
-                                   max(1, min(10, top_k)), annotate)
+                                   max(1, min(10, top_k)), annotate, hole_bytes)
 
-def process_find_cell(table_bytes, box_bytes, cols, rows, col, row, top_k, annotate):
+def process_find_cell(table_bytes, box_bytes, cols, rows, col, row, top_k, annotate, hole_bytes=None):
     table = img_bytes_to_cv2(table_bytes, MAX_TABLE_SIDE)
     box = img_bytes_to_cv2(box_bytes)
     pieces = engine.segment_table_pieces(table)
     if not pieces:
         raise HTTPException(status_code=404, detail="Nenhuma peça encontrada na foto da mesa. Espalhe as peças sobre um fundo liso.")
+    hole = None
+    if hole_bytes:
+        hole = grid_engine.hole_shapes(img_bytes_to_cv2(hole_bytes), 3, 3, 0, 1, 1,
+                                       flats=grid_engine.expected_flats(cols, rows, col, row))
     patch = grid_engine.cell_patch(box, cols, rows, col, row)
-    ranked = grid_engine.match_cell(patch, pieces, top_k=top_k)
+    ranked = grid_engine.match_cell(patch, pieces, top_k=top_k, hole=hole)
     if not ranked:
         raise HTTPException(status_code=404, detail="Não foi possível comparar as peças da foto.")
     confident = grid_engine.is_confident(ranked)
@@ -287,7 +297,10 @@ def process_find_cell(table_bytes, box_bytes, cols, rows, col, row, top_k, annot
             "rotation_deg": c["rotation"],
             "score": round(c["score"] * 100, 1),
             "edge_ok": c["flats_ok"],
+            "shape_ok": c["shape_ok"],
         } for i, c in enumerate(ranked)],
+        # Formato do buraco usado no filtro (lado → "tab"/"blank"/"flat"/None), ou None
+        "hole": hole,
     }
     if annotate:
         annotated = grid_engine.draw_candidates(table, ranked, confident)

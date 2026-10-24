@@ -1094,8 +1094,24 @@ function buildFindPieceForm(tableFileBlob, { annotate = true } = {}) {
   return formData;
 }
 
+// Tabuleiro endireitado em volta da célula escolhida (3 × 3 células), se ela está vazia no último
+// escaneamento desta sessão: as abas e encaixes das vizinhas mostram o formato da peça que falta
+async function holeBlob() {
+  if (!grid.board || !grid.cell || cellState(grid.cell) !== '0') return null;
+  const { col, row } = grid.cell;
+  const key = `${col},${row}`;
+  if (grid.hole && grid.hole.key === key) return grid.hole.blob;
+  const p = currentPuzzle;
+  const { img, corners } = grid.board;
+  const cellH = Math.round(HOLE_CELL_PX * Grid.cellAspect(p, img, corners));
+  const win = Grid.rectify(img, Grid.windowCorners(corners, p.cols, p.rows, col, row, 1), { cols: 3, rows: 3, cellW: HOLE_CELL_PX, cellH });
+  const blob = await Grid.canvasToBlob(win, 0.9);
+  grid.hole = { key, blob };
+  return blob;
+}
+
 // Requisição da busca por célula do mapa
-function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
+async function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
   const formData = new FormData();
   formData.append('table_file', tableFileBlob, 'table.jpg');
   formData.append('box_file', grid.artBlob, 'art.jpg');
@@ -1105,7 +1121,20 @@ function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
   formData.append('row', grid.cell.row);
   formData.append('top_k', '5');
   formData.append('annotate', annotate ? 'true' : 'false');
+  try {
+    const hole = await holeBlob();
+    if (hole) formData.append('hole_file', hole, 'hole.jpg');
+  } catch (_) { /* sem o buraco a busca segue só pela arte */ }
   return formData;
+}
+
+// "em cima aba, à direita encaixe…" com os lados do buraco que a busca conseguiu medir
+const HOLE_SIDE_NAMES = { top: 'em cima', right: 'à direita', bottom: 'embaixo', left: 'à esquerda' };
+const HOLE_KIND_NAMES = { tab: 'aba', blank: 'encaixe', flat: 'reto' };
+function holeLabel(hole) {
+  if (!hole) return '';
+  const parts = Object.keys(HOLE_SIDE_NAMES).filter(s => hole[s]).map(s => `${HOLE_SIDE_NAMES[s]} ${HOLE_KIND_NAMES[hole[s]]}`);
+  return parts.length ? `Formato do buraco considerado: ${parts.join(', ')}.` : '';
 }
 
 // Lista numerada dos candidatos (mesma numeração dos círculos na foto)
@@ -1124,7 +1153,7 @@ function renderCandidates(data) {
     line1.textContent = rotationLabel(c.rotation_deg);
     const line2 = document.createElement('p');
     line2.className = 'text-xs text-slate-400';
-    line2.textContent = `Semelhança ${Math.round(c.score)}%${c.edge_ok ? '' : ' · formato de borda não bate'}`;
+    line2.textContent = `Semelhança ${Math.round(c.score)}%${c.edge_ok ? '' : ' · formato de borda não bate'}${c.shape_ok === false ? ' · abas/encaixes não batem com o buraco' : ''}`;
     text.append(line1, line2);
     li.append(badge, text);
     candidateList.appendChild(li);
@@ -1155,7 +1184,7 @@ btnFind.addEventListener('click', async () => {
     const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: byCell ? buildFindCellForm(tableBlob) : buildFindPieceForm(tableBlob)
+      body: byCell ? await buildFindCellForm(tableBlob) : buildFindPieceForm(tableBlob)
     }, 120000);
 
     if (!res.ok) {
@@ -1183,6 +1212,8 @@ btnFind.addEventListener('click', async () => {
         resultTitle.textContent = `Candidatas para a peça nº ${n}`;
         resultSubtitle.textContent = 'Confira as numeradas na foto, começando pela nº 1.';
       }
+      const holeText = holeLabel(data.hole);
+      if (holeText) resultSubtitle.textContent += ` ${holeText}`;
     } else if (data.confident) {
       resultTitle.textContent = 'Peça encontrada';
       resultSubtitle.textContent = `Está circulada em verde entre as ${data.pieces_detected} peças da foto.`;
@@ -1297,7 +1328,12 @@ const grid = {
   artBlob: null,
   scanMap: null,    // '1' montada, '0' faltando, '?' desconhecida (linha por linha)
   cell: null,       // {col, row} escolhida
+  board: null,      // última foto do tabuleiro escaneado {img, corners}: dá o formato dos buracos
+  hole: null,       // recorte do buraco já gerado {key, blob}
 };
+
+// Lado (px) da célula no recorte do buraco enviado à busca
+const HOLE_CELL_PX = 64;
 
 const isGridPuzzle = (p) => Boolean(p && p.cols > 1 && p.rows > 1);
 const gridActive = () => Boolean(currentPuzzle && isGridPuzzle(currentPuzzle) && grid.art && grid.artBlob);
@@ -1320,7 +1356,7 @@ const mapViewer = new InteractiveImageViewer({
 });
 
 function exitGridMode() {
-  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = null;
+  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = null;
   hide(gridCard);
   show(legacyTarget, 'grid');
   hide(candidateList);
@@ -1535,6 +1571,8 @@ for (const input of [scanInput, scanInputGallery]) {
       setServiceStatus('api', 'ok', 'Online');
 
       grid.scanMap = data.placed_map;
+      grid.board = { img, corners: res.corners };
+      grid.hole = null;
       scanOverlay.src = `data:image/jpeg;base64,${data.overlay_base64}`;
       show(scanDetails);
       updateGridCounts();
@@ -1713,7 +1751,7 @@ async function scanFrame(session) {
     const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: byCell ? buildFindCellForm(frameBlob, { annotate: false }) : buildFindPieceForm(frameBlob, { annotate: false })
+      body: byCell ? await buildFindCellForm(frameBlob, { annotate: false }) : buildFindPieceForm(frameBlob, { annotate: false })
     }, 60000);
 
     if (session !== scanSession) return;
