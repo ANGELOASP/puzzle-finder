@@ -241,7 +241,14 @@ const newPuzzleForm = document.getElementById('newPuzzleForm');
 const btnCloseNewPuzzleModal = document.getElementById('btnCloseNewPuzzleModal');
 const btnCreatePuzzleSubmit = document.getElementById('btnCreatePuzzleSubmit');
 const newPuzzleName = document.getElementById('newPuzzleName');
-const newPuzzleTotal = document.getElementById('newPuzzleTotal');
+const newPuzzleCols = document.getElementById('newPuzzleCols');
+const newPuzzleRows = document.getElementById('newPuzzleRows');
+const newPuzzleWidth = document.getElementById('newPuzzleWidth');
+const newPuzzleHeight = document.getElementById('newPuzzleHeight');
+const newPuzzleTotalText = document.getElementById('newPuzzleTotalText');
+const newPuzzleBoxLabel = document.getElementById('newPuzzleBoxLabel');
+const newPuzzleTitle = document.getElementById('newPuzzleTitle');
+const btnEditPuzzle = document.getElementById('btnEditPuzzle');
 const newPuzzleBoxFile = document.getElementById('newPuzzleBoxFile');
 
 const puzzleProgressContainer = document.getElementById('puzzleProgressContainer');
@@ -347,6 +354,7 @@ function onSignedIn(user) {
 
 function onSignedOut() {
   currentUser = null;
+  exitGridMode();
   puzzles = [];
   currentPuzzle = null;
   hide(puzzleProgressContainer);
@@ -447,61 +455,104 @@ btnLogout.addEventListener('click', async () => {
   onSignedOut();
 });
 
-btnNewPuzzle.addEventListener('click', () => {
-  if (!supabaseClient) {
+// Formulário serve para cadastrar e para editar (ex.: incluir a grade num quebra-cabeça antigo)
+let editingPuzzle = null;
+
+function openPuzzleForm(puzzle = null) {
+  if (!supabaseClient || !currentUser) {
     notify('Banco de dados desconectado. Confira em Configurações.', 'error');
     return;
   }
+  editingPuzzle = puzzle;
+  newPuzzleForm.reset();
+  newPuzzleTitle.textContent = puzzle ? 'Editar quebra-cabeça' : 'Novo quebra-cabeça';
+  newPuzzleBoxFile.required = !puzzle;
+  newPuzzleBoxLabel.textContent = puzzle
+    ? 'Trocar a foto da arte (opcional)'
+    : 'Foto da arte (caixa ou pôster), de frente e bem nítida';
+  btnCreatePuzzleSubmit.textContent = puzzle ? 'Salvar alterações' : 'Salvar quebra-cabeça';
+  if (puzzle) {
+    newPuzzleName.value = puzzle.name || '';
+    newPuzzleCols.value = puzzle.cols || '';
+    newPuzzleRows.value = puzzle.rows || '';
+    newPuzzleWidth.value = puzzle.width_cm || '';
+    newPuzzleHeight.value = puzzle.height_cm || '';
+  }
+  updateTotalText();
   newPuzzleModal.showModal();
   newPuzzleName.focus();
-});
+}
 
+function updateTotalText() {
+  const c = parseInt(newPuzzleCols.value, 10), r = parseInt(newPuzzleRows.value, 10);
+  newPuzzleTotalText.textContent = (c > 1 && r > 1)
+    ? `${c} × ${r} = ${c * r} peças. As medidas deixam o mapa mais preciso.`
+    : 'Colunas × linhas = total de peças. As medidas deixam o mapa mais preciso.';
+}
+newPuzzleCols.addEventListener('input', updateTotalText);
+newPuzzleRows.addEventListener('input', updateTotalText);
+
+btnNewPuzzle.addEventListener('click', () => openPuzzleForm(null));
+btnEditPuzzle.addEventListener('click', () => { if (currentPuzzle) openPuzzleForm(currentPuzzle); });
 btnCloseNewPuzzleModal.addEventListener('click', () => newPuzzleModal.close());
 
 newPuzzleForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = newPuzzleName.value.trim();
-  const total = parseInt(newPuzzleTotal.value, 10);
+  const cols = parseInt(newPuzzleCols.value, 10);
+  const rows = parseInt(newPuzzleRows.value, 10);
+  const width = parseFloat(newPuzzleWidth.value);
+  const height = parseFloat(newPuzzleHeight.value);
   const file = newPuzzleBoxFile.files[0];
 
-  if (!name || !file || !(total > 1)) {
+  if (!name || !(cols > 1) || !(rows > 1) || (!editingPuzzle && !file)) {
     newPuzzleForm.reportValidity();
     return;
   }
 
   btnCreatePuzzleSubmit.disabled = true;
-  btnCreatePuzzleSubmit.textContent = 'Enviando imagem…';
+  btnCreatePuzzleSubmit.textContent = file ? 'Enviando imagem…' : 'Salvando…';
 
   try {
-    const compressedBlob = await compressImage(file);
-    // Bucket privado: cada usuário grava na própria pasta
-    const filePath = `${currentUser.id}/box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
+    const row = {
+      name, cols, rows,
+      total_pieces: cols * rows,
+      width_cm: width > 0 ? width : null,
+      height_cm: height > 0 ? height : null,
+    };
 
-    const { error: uploadError } = await supabaseClient.storage
-      .from('puzzle-images')
-      .upload(filePath, compressedBlob, { contentType: 'image/jpeg' });
+    if (file) {
+      // A arte precisa de detalhe: cada peça ocupa poucos pixels na foto da caixa
+      const compressedBlob = await compressImage(file, 2400, 0.9);
+      // Bucket privado: cada usuário grava na própria pasta
+      const filePath = `${currentUser.id}/box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
+      const { error: uploadError } = await supabaseClient.storage
+        .from('puzzle-images')
+        .upload(filePath, compressedBlob, { contentType: 'image/jpeg' });
+      if (uploadError) throw uploadError;
+      row.box_image_path = filePath;
+      row.box_corners = null; // foto nova: os cantos precisam ser marcados de novo
+    }
 
-    if (uploadError) throw uploadError;
+    const query = editingPuzzle
+      ? supabaseClient.from('puzzles').update(row).eq('id', editingPuzzle.id)
+      : supabaseClient.from('puzzles').insert([row]);
+    const { data: saved, error } = await query.select().single();
+    if (error) throw error;
 
-    const { data: insertData, error: insertError } = await supabaseClient
-      .from('puzzles')
-      .insert([{ name, total_pieces: total, box_image_path: filePath }])
-      .select()
-      .single();
-
-    if (insertError) throw insertError;
-
-    notify(`“${name}” cadastrado.`, 'success');
+    notify(editingPuzzle ? 'Alterações salvas.' : `“${name}” cadastrado.`, 'success');
     newPuzzleModal.close();
     newPuzzleForm.reset();
-
-    await loadPuzzlesFromSupabase(insertData.id);
+    await loadPuzzlesFromSupabase(saved.id);
 
   } catch (err) {
-    notify(`Não foi possível salvar: ${err.message}`, 'error', 7000);
+    const msg = /column|schema cache/i.test(err.message || '')
+      ? 'O banco ainda não tem os campos da grade. Rode a migração do mapa no Supabase.'
+      : `Não foi possível salvar: ${err.message}`;
+    notify(msg, 'error', 8000);
   } finally {
     btnCreatePuzzleSubmit.disabled = false;
-    btnCreatePuzzleSubmit.textContent = 'Salvar quebra-cabeça';
+    btnCreatePuzzleSubmit.textContent = editingPuzzle ? 'Salvar alterações' : 'Salvar quebra-cabeça';
   }
 });
 
@@ -527,7 +578,9 @@ async function loadPuzzlesFromSupabase(autoSelectId = null) {
     data.forEach((p) => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = `${p.name} · ${p.total_pieces} peças`;
+      opt.textContent = (p.cols && p.rows)
+        ? `${p.name} · ${p.cols}×${p.rows} (${p.cols * p.rows} peças)`
+        : `${p.name} · ${p.total_pieces} peças`;
       puzzleSelect.appendChild(opt);
     });
 
@@ -549,6 +602,7 @@ puzzleSelect.addEventListener('change', (e) => {
     currentPuzzle = null;
     hide(puzzleProgressContainer);
     hide(boxSavedBadge);
+    exitGridMode();
     clearBoxImage();
     return;
   }
@@ -557,6 +611,7 @@ puzzleSelect.addEventListener('change', (e) => {
 
 async function onPuzzleSelected(puzzle) {
   currentPuzzle = puzzle;
+  exitGridMode();
   show(puzzleProgressContainer);
   puzzleProgressName.textContent = puzzle.name;
   currentFoundCount = 0;
@@ -579,8 +634,12 @@ async function onPuzzleSelected(puzzle) {
   }
 
   if (imageResult.status === 'fulfilled') {
-    loadBoxImage(imageResult.value);
-    show(boxSavedBadge);
+    if (isGridPuzzle(puzzle)) {
+      await enterGridMode(puzzle, imageResult.value);
+    } else {
+      loadBoxImage(imageResult.value);
+      show(boxSavedBadge);
+    }
   } else {
     console.error('Erro ao carregar imagem da caixa:', imageResult.reason);
     notify('Não foi possível carregar a imagem da caixa salva.', 'error');
@@ -601,9 +660,11 @@ async function downloadBoxImage(puzzle) {
 
 function updateProgressBar() {
   if (!currentPuzzle) return;
-  const total = currentPuzzle.total_pieces || 1000;
-  const percent = Math.min(100, Math.round((currentFoundCount / total) * 100));
-  puzzleProgressStats.textContent = `${currentFoundCount} / ${total} peças · ${percent}%`;
+  const total = isGridPuzzle(currentPuzzle) ? currentPuzzle.cols * currentPuzzle.rows : (currentPuzzle.total_pieces || 1000);
+  // Com mapa escaneado, o progresso vem do mapa (montadas de verdade), não só das registradas no app
+  const done = grid.scanMap ? countPlaced(grid.scanMap) : currentFoundCount;
+  const percent = Math.min(100, Math.round((done / total) * 100));
+  puzzleProgressStats.textContent = `${done} / ${total} peças · ${percent}%`;
   puzzleProgressBar.style.width = `${percent}%`;
   puzzleProgressTrack.setAttribute('aria-valuenow', String(percent));
 }
@@ -847,14 +908,6 @@ class InteractiveImageViewer {
   }
 }
 
-// Elementos do Tabuleiro
-const boardInput = document.getElementById('boardInput');
-const boardInputGallery = document.getElementById('boardInputGallery');
-const boardInputReplace = document.getElementById('boardInputReplace');
-const boardUploadLabel = document.getElementById('boardUploadLabel');
-const boardPreview = document.getElementById('boardPreview');
-const boardContainer = document.getElementById('boardContainer');
-
 // Elementos da Caixa
 const boxInput = document.getElementById('boxInput');
 const boxInputReplace = document.getElementById('boxInputReplace');
@@ -862,28 +915,9 @@ const boxUploadLabel = document.getElementById('boxUploadLabel');
 const boxPreview = document.getElementById('boxPreview');
 const boxContainer = document.getElementById('boxContainer');
 
-let boardPercentX = 0.5, boardPercentY = 0.5, hasSelectedBoard = false;
 let targetPercentX = 0.5, targetPercentY = 0.5, hasSelectedBox = false;
 
 // Instanciação dos visualizadores interativos
-const boardViewer = new InteractiveImageViewer({
-  viewport: document.getElementById('boardViewport'),
-  layer: document.getElementById('boardTransformLayer'),
-  img: boardPreview,
-  pin: document.getElementById('boardPin'),
-  zoomInBtn: document.getElementById('btnBoardZoomIn'),
-  zoomOutBtn: document.getElementById('btnBoardZoomOut'),
-  zoomResetBtn: document.getElementById('btnBoardZoomReset'),
-  zoomBadge: document.getElementById('boardZoomBadge'),
-  coordBadge: document.getElementById('boardCoordBadge'),
-  onSelect: (nx, ny) => {
-    boardPercentX = nx;
-    boardPercentY = ny;
-    hasSelectedBoard = true;
-    checkReady();
-  }
-});
-
 const boxViewer = new InteractiveImageViewer({
   viewport: document.getElementById('boxViewport'),
   layer: document.getElementById('boxTransformLayer'),
@@ -922,12 +956,11 @@ const shapeMatchTag = document.getElementById('shapeMatchTag');
 const checkTarget = document.getElementById('checkTarget');
 const checkTable = document.getElementById('checkTable');
 
-let boardBlob = null;
 let boxBlob = null;
 let tableBlob = null;
 let lastFoundResult = null;
 
-async function compressImage(file, maxDimension = 1600) {
+async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -952,7 +985,7 @@ async function compressImage(file, maxDimension = 1600) {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, width, height);
 
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Falha ao comprimir a imagem.')), 'image/jpeg', 0.85);
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Falha ao comprimir a imagem.')), 'image/jpeg', quality);
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -963,27 +996,16 @@ async function compressImage(file, maxDimension = 1600) {
 }
 
 // Lê o arquivo escolhido em um <input type="file"> e o devolve comprimido (ou null)
-async function readPickedImage(input) {
+async function readPickedImage(input, maxDimension = 1600, quality = 0.85) {
   const file = input.files && input.files[0];
   input.value = ''; // permite escolher o mesmo arquivo de novo
   if (!file) return null;
   try {
-    return await compressImage(file);
+    return await compressImage(file, maxDimension, quality);
   } catch (err) {
     notify(err.message, 'error');
     return null;
   }
-}
-
-function loadBoardImage(blob) {
-  boardBlob = blob;
-  hasSelectedBoard = false;
-  boardViewer.clearSelection();
-  boardPreview.onload = () => boardViewer.reset();
-  setObjectUrl(boardPreview, blob);
-  hide(boardUploadLabel);
-  show(boardContainer, 'flex');
-  checkReady();
 }
 
 function loadBoxImage(blob) {
@@ -1009,14 +1031,6 @@ function clearBoxImage() {
   checkReady();
 }
 
-// Carregar Tabuleiro
-for (const input of [boardInput, boardInputGallery, boardInputReplace]) {
-  input.addEventListener('change', async () => {
-    const blob = await readPickedImage(input);
-    if (blob) loadBoardImage(blob);
-  });
-}
-
 // Carregar Imagem da Caixa (Manual)
 for (const input of [boxInput, boxInputReplace]) {
   input.addEventListener('change', async () => {
@@ -1030,7 +1044,7 @@ for (const input of [boxInput, boxInputReplace]) {
 // Peças Soltas na Mesa (câmera ou galeria)
 for (const input of [tableInput, tableInputGallery]) {
   input.addEventListener('change', async () => {
-    const blob = await readPickedImage(input);
+    const blob = await readPickedImage(input, TABLE_MAX_SIDE, 0.9);
     if (!blob) return;
     tableBlob = blob;
     setObjectUrl(tablePreview, blob);
@@ -1041,8 +1055,11 @@ for (const input of [tableInput, tableInputGallery]) {
   });
 }
 
+// Lado máximo da foto da mesa: com centenas de peças, cada uma precisa de pixels suficientes
+const TABLE_MAX_SIDE = 3000;
+
 function hasTarget() {
-  return Boolean((boardBlob && hasSelectedBoard) || (boxBlob && hasSelectedBox));
+  return gridActive() ? Boolean(grid.cell) : Boolean(boxBlob && hasSelectedBox);
 }
 
 function setChecklistItem(li, done) {
@@ -1063,12 +1080,6 @@ function buildFindPieceForm(tableFileBlob, { annotate = true } = {}) {
   const formData = new FormData();
   formData.append('table_file', tableFileBlob, 'table.jpg');
 
-  if (boardBlob && hasSelectedBoard) {
-    formData.append('board_file', boardBlob, 'board.jpg');
-    formData.append('board_x_ratio', boardPercentX);
-    formData.append('board_y_ratio', boardPercentY);
-  }
-
   if (boxBlob && hasSelectedBox) {
     formData.append('box_file', boxBlob, 'box.jpg');
     formData.append('target_x_ratio', targetPercentX);
@@ -1081,6 +1092,44 @@ function buildFindPieceForm(tableFileBlob, { annotate = true } = {}) {
 
   formData.append('annotate', annotate ? 'true' : 'false');
   return formData;
+}
+
+// Requisição da busca por célula do mapa
+function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
+  const formData = new FormData();
+  formData.append('table_file', tableFileBlob, 'table.jpg');
+  formData.append('box_file', grid.artBlob, 'art.jpg');
+  formData.append('cols', currentPuzzle.cols);
+  formData.append('rows', currentPuzzle.rows);
+  formData.append('col', grid.cell.col);
+  formData.append('row', grid.cell.row);
+  formData.append('top_k', '5');
+  formData.append('annotate', annotate ? 'true' : 'false');
+  return formData;
+}
+
+// Lista numerada dos candidatos (mesma numeração dos círculos na foto)
+function renderCandidates(data) {
+  candidateList.innerHTML = '';
+  data.candidates.forEach((c) => {
+    const li = document.createElement('li');
+    li.className = 'p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3';
+    const badge = document.createElement('span');
+    badge.className = `w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-sm font-extrabold ${c.rank === 1 ? (data.confident ? 'bg-emerald-400 text-slate-950' : 'bg-amber-400 text-slate-950') : 'bg-slate-700 text-slate-100'}`;
+    badge.textContent = String(c.rank);
+    const text = document.createElement('div');
+    text.className = 'min-w-0';
+    const line1 = document.createElement('p');
+    line1.className = 'text-sm font-semibold';
+    line1.textContent = rotationLabel(c.rotation_deg);
+    const line2 = document.createElement('p');
+    line2.className = 'text-xs text-slate-400';
+    line2.textContent = `Semelhança ${Math.round(c.score)}%${c.edge_ok ? '' : ' · formato de borda não bate'}`;
+    text.append(line1, line2);
+    li.append(badge, text);
+    candidateList.appendChild(li);
+  });
+  show(candidateList);
 }
 
 // Enviar Foto Manual para API
@@ -1102,29 +1151,47 @@ btnFind.addEventListener('click', async () => {
 
   try {
     if (apiWakeup) await apiWakeup;
-    const res = await fetchWithTimeout(`${getApiUrl()}/api/find-piece`, {
+    const byCell = gridActive();
+    const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: buildFindPieceForm(tableBlob)
-    }, 90000);
+      body: byCell ? buildFindCellForm(tableBlob) : buildFindPieceForm(tableBlob)
+    }, 120000);
 
     if (!res.ok) {
       throw new Error(await apiErrorMessage(res, 'Não foi possível encontrar a peça correspondente.'));
     }
 
     const data = await res.json();
-    lastFoundResult = data;
     setServiceStatus('api', 'ok', 'Online');
     hide(apiNotice, 'flex');
 
     document.getElementById('pieceCrop').src = `data:image/jpeg;base64,${data.piece_crop_base64}`;
     document.getElementById('highlightedTable').src = `data:image/jpeg;base64,${data.annotated_table_base64}`;
-    document.getElementById('rotationTag').textContent = rotationLabel(data.rotation_deg);
+    hide(candidateList);
 
-    if (data.confident) {
+    if (byCell) {
+      const best = data.candidates[0];
+      lastFoundResult = { rotation_deg: best.rotation_deg, shape_similarity: null, cell: { ...grid.cell } };
+      document.getElementById('rotationTag').textContent = rotationLabel(best.rotation_deg);
+      renderCandidates(data);
+      const n = Grid.cellNumber(grid.cell.col, grid.cell.row, currentPuzzle.cols);
+      if (data.confident) {
+        resultTitle.textContent = `Peça nº ${n} encontrada`;
+        resultSubtitle.textContent = 'É a nº 1, circulada em verde. As outras numeradas são as próximas mais parecidas.';
+      } else {
+        resultTitle.textContent = `Candidatas para a peça nº ${n}`;
+        resultSubtitle.textContent = 'Confira as numeradas na foto, começando pela nº 1.';
+      }
+    } else if (data.confident) {
       resultTitle.textContent = 'Peça encontrada';
       resultSubtitle.textContent = `Está circulada em verde entre as ${data.pieces_detected} peças da foto.`;
-    } else {
+    }
+    if (!byCell) {
+      lastFoundResult = data;
+      document.getElementById('rotationTag').textContent = rotationLabel(data.rotation_deg);
+    }
+    if (!byCell && !data.confident) {
       resultTitle.textContent = 'Melhor palpite';
       resultSubtitle.textContent = 'A semelhança ficou baixa: confira antes de encaixar. Marcar o ponto com mais precisão ou uma foto mais próxima ajuda.';
     }
@@ -1168,14 +1235,20 @@ btnConfirmFound.addEventListener('click', async () => {
     btnConfirmFound.disabled = true;
     btnConfirmFoundText.textContent = 'Salvando…';
 
-    const { error } = await supabaseClient.from('found_pieces').insert([{
+    const cell = lastFoundResult && lastFoundResult.cell;
+    const record = {
       puzzle_id: currentPuzzle.id,
       piece_number: currentFoundCount + 1,
       rotation_deg: lastFoundResult ? lastFoundResult.rotation_deg : 0,
       shape_similarity: lastFoundResult ? lastFoundResult.shape_similarity : null
-    }]);
+    };
+    if (cell) record.cell_index = cell.row * currentPuzzle.cols + cell.col;
+    const { error } = await supabaseClient.from('found_pieces').insert([record]);
 
     if (error) throw error;
+
+    // Mapa: a célula passa a contar como montada
+    if (cell && gridActive()) await setCellState(cell, '1');
 
     currentFoundCount += 1;
     updateProgressBar();
@@ -1191,7 +1264,298 @@ btnConfirmFound.addEventListener('click', async () => {
 });
 
 // ==========================================
-// 7. SCANNER DE CÂMERA EM TEMPO REAL (AR)
+// 7. MAPA POR GRADE (colunas × linhas)
+// ==========================================
+const gridCard = document.getElementById('gridCard');
+const gridCounts = document.getElementById('gridCounts');
+const gridSetup = document.getElementById('gridSetup');
+const btnSetCorners = document.getElementById('btnSetCorners');
+const btnEditCorners = document.getElementById('btnEditCorners');
+const mapContainer = document.getElementById('mapContainer');
+const mapImage = document.getElementById('mapImage');
+const mapPin = document.getElementById('mapPin');
+const cellNumber = document.getElementById('cellNumber');
+const cellInfo = document.getElementById('cellInfo');
+const btnToggleCell = document.getElementById('btnToggleCell');
+const scanInput = document.getElementById('scanInput');
+const scanInputGallery = document.getElementById('scanInputGallery');
+const scanLoading = document.getElementById('scanLoading');
+const scanLoadingText = document.getElementById('scanLoadingText');
+const scanDetails = document.getElementById('scanDetails');
+const scanOverlay = document.getElementById('scanOverlay');
+const legacyTarget = document.getElementById('legacyTarget');
+const candidateList = document.getElementById('candidateList');
+const step1Text = document.getElementById('step1Text');
+const step1Sub = document.getElementById('step1Sub');
+
+// Margem (em células) de mesa em volta do tabuleiro retificado: ensina a cor do vazio
+const SCAN_MARGIN = 0.6;
+
+const grid = {
+  boxBitmap: null,  // foto da caixa (canvas)
+  art: null,        // arte retificada: exatamente cols × rows células
+  artBlob: null,
+  scanMap: null,    // '1' montada, '0' faltando, '?' desconhecida (linha por linha)
+  cell: null,       // {col, row} escolhida
+};
+
+const isGridPuzzle = (p) => Boolean(p && p.cols > 1 && p.rows > 1);
+const gridActive = () => Boolean(currentPuzzle && isGridPuzzle(currentPuzzle) && grid.art && grid.artBlob);
+const countPlaced = (map) => { let n = 0; for (let i = 0; i < map.length; i++) if (map[i] === '1') n++; return n; };
+
+const mapViewer = new InteractiveImageViewer({
+  viewport: document.getElementById('mapViewport'),
+  layer: document.getElementById('mapTransformLayer'),
+  img: mapImage,
+  pin: mapPin,
+  zoomInBtn: document.getElementById('btnMapZoomIn'),
+  zoomOutBtn: document.getElementById('btnMapZoomOut'),
+  zoomResetBtn: document.getElementById('btnMapZoomReset'),
+  zoomBadge: document.getElementById('mapZoomBadge'),
+  coordBadge: null,
+  onSelect: (nx, ny) => {
+    const { cols, rows } = currentPuzzle;
+    selectCell(Math.min(cols - 1, Math.floor(nx * cols)), Math.min(rows - 1, Math.floor(ny * rows)));
+  }
+});
+
+function exitGridMode() {
+  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = null;
+  hide(gridCard);
+  show(legacyTarget, 'grid');
+  hide(candidateList);
+  step1Text.textContent = 'Escolha a peça que falta';
+  step1Sub.textContent = 'tocando na imagem da caixa';
+  checkReady();
+}
+
+async function enterGridMode(puzzle, boxImageBlob) {
+  hide(legacyTarget, 'grid');
+  show(gridCard);
+  step1Text.textContent = 'Escolha a peça que falta';
+  step1Sub.textContent = 'no mapa ou pelo número';
+  cellNumber.max = String(puzzle.cols * puzzle.rows);
+  grid.scanMap = (puzzle.scan_map && puzzle.scan_map.length === puzzle.cols * puzzle.rows) ? puzzle.scan_map : null;
+  grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 3000);
+  if (currentPuzzle !== puzzle) return;
+  updateGridCounts();
+  if (Array.isArray(puzzle.box_corners) && puzzle.box_corners.length === 4) {
+    await buildArt();
+  } else {
+    show(gridSetup);
+    hide(mapContainer, 'flex');
+  }
+}
+
+async function buildArt() {
+  const p = currentPuzzle;
+  const corners = p.box_corners;
+  const native = Grid.nativeCell(grid.boxBitmap, corners, p.cols, p.rows);
+  // Não inventa detalhe: no máximo 48 px por célula (o motor compara a ~64 px)
+  const cellW = Math.max(20, Math.min(48, Math.round(native.w)));
+  const cellH = Math.max(12, Math.round(cellW * Grid.cellAspect(p, grid.boxBitmap, corners)));
+  grid.art = Grid.rectify(grid.boxBitmap, corners, { cols: p.cols, rows: p.rows, cellW, cellH });
+  grid.artBlob = await Grid.canvasToBlob(grid.art, 0.92);
+  hide(gridSetup);
+  show(mapContainer, 'flex');
+  await renderMapImage(true);
+  if (grid.cell) selectCell(grid.cell.col, grid.cell.row);
+  checkReady();
+}
+
+async function renderMapImage(resetZoom = false) {
+  const p = currentPuzzle;
+  const canvas = Grid.renderMap(grid.art, p.cols, p.rows, grid.scanMap);
+  const blob = await Grid.canvasToBlob(canvas, 0.88);
+  if (resetZoom) mapImage.onload = () => mapViewer.reset();
+  else mapImage.onload = null;
+  setObjectUrl(mapImage, blob);
+}
+
+function updateGridCounts() {
+  const p = currentPuzzle;
+  if (!p || !isGridPuzzle(p)) return;
+  const total = p.cols * p.rows;
+  if (grid.scanMap) {
+    const placed = countPlaced(grid.scanMap);
+    gridCounts.textContent = `Montadas ${placed} · Faltam ${total - placed}`;
+  } else {
+    gridCounts.textContent = `${total} peças · ainda não escaneado`;
+  }
+  updateProgressBar();
+}
+
+function cellState(cell) {
+  if (!grid.scanMap) return '?';
+  return grid.scanMap[cell.row * currentPuzzle.cols + cell.col];
+}
+
+function selectCell(col, row) {
+  const p = currentPuzzle;
+  grid.cell = { col, row };
+  const n = Grid.cellNumber(col, row, p.cols);
+  if (String(cellNumber.value) !== String(n)) cellNumber.value = String(n);
+  const state = cellState(grid.cell);
+  const stateText = state === '1' ? ' · já montada' : state === '0' ? ' · faltando' : '';
+  cellInfo.textContent = `Coluna ${col + 1} · Linha ${row + 1}${stateText}`;
+  mapPin.style.left = `${((col + 0.5) / p.cols) * 100}%`;
+  mapPin.style.top = `${((row + 0.5) / p.rows) * 100}%`;
+  mapPin.classList.remove('hidden');
+  btnToggleCell.textContent = state === '1' ? 'Marcar como faltando' : 'Marcar como montada';
+  show(btnToggleCell);
+  checkReady();
+}
+
+cellNumber.addEventListener('change', () => {
+  const p = currentPuzzle;
+  const n = parseInt(cellNumber.value, 10);
+  if (!p || !isGridPuzzle(p) || !(n >= 1 && n <= p.cols * p.rows)) {
+    if (cellNumber.value) notify(`Digite um número de 1 a ${p ? p.cols * p.rows : '…'}.`, 'info');
+    return;
+  }
+  const { col, row } = Grid.cellFromNumber(n, p.cols);
+  selectCell(col, row);
+});
+
+async function persistScanMap() {
+  const { error } = await supabaseClient.from('puzzles')
+    .update({ scan_map: grid.scanMap, scanned_at: new Date().toISOString() })
+    .eq('id', currentPuzzle.id);
+  if (error) throw error;
+  currentPuzzle.scan_map = grid.scanMap;
+}
+
+async function setCellState(cell, value) {
+  const p = currentPuzzle;
+  const total = p.cols * p.rows;
+  const map = (grid.scanMap || '?'.repeat(total)).split('');
+  map[cell.row * p.cols + cell.col] = value;
+  grid.scanMap = map.join('');
+  updateGridCounts();
+  await renderMapImage();
+  if (grid.cell && grid.cell.col === cell.col && grid.cell.row === cell.row) selectCell(cell.col, cell.row);
+  try {
+    await persistScanMap();
+  } catch (err) {
+    notify(`Mapa atualizado só neste aparelho: ${err.message}`, 'error');
+  }
+}
+
+btnToggleCell.addEventListener('click', () => {
+  if (!grid.cell) return;
+  setCellState(grid.cell, cellState(grid.cell) === '1' ? '0' : '1');
+});
+
+async function editBoxCorners() {
+  const p = currentPuzzle;
+  const res = await Grid.editCorners({
+    img: grid.boxBitmap,
+    title: 'Cantos da arte',
+    hint: 'Arraste as 4 bolinhas até os cantos da arte. A amarela (nº 1) é o canto superior esquerdo; use Girar se a foto estiver de lado. A grade verde deve cair sobre as peças.',
+    corners: p.box_corners,
+    cols: p.cols,
+    rows: p.rows,
+  });
+  if (!res) return;
+  const corners = res.corners.map(([x, y]) => [Number(x.toFixed(5)), Number(y.toFixed(5))]);
+  try {
+    const { error } = await supabaseClient.from('puzzles').update({ box_corners: corners }).eq('id', p.id);
+    if (error) throw error;
+  } catch (err) {
+    notify(/column|schema cache/i.test(err.message || '')
+      ? 'O banco ainda não tem os campos da grade. Rode a migração do mapa no Supabase.'
+      : `Cantos usados só neste aparelho: ${err.message}`, 'error', 8000);
+  }
+  p.box_corners = corners;
+  await buildArt();
+}
+btnSetCorners.addEventListener('click', editBoxCorners);
+btnEditCorners.addEventListener('click', editBoxCorners);
+
+// Escanear o tabuleiro: foto → cantos (+ área vazia) → retifica → API → mapa
+for (const input of [scanInput, scanInputGallery]) {
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file || !gridActive()) {
+      if (file) notify('Marque primeiro os cantos da arte para criar o mapa.', 'info');
+      return;
+    }
+    const p = currentPuzzle;
+    let img;
+    try {
+      img = await Grid.loadBitmap(file, 3000);
+    } catch (err) {
+      notify(err.message, 'error');
+      return;
+    }
+    const savedKey = `pf_board_corners_${p.id}`;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(savedKey) || 'null'); } catch (_) {}
+    const res = await Grid.editCorners({
+      img,
+      title: 'Cantos do tabuleiro',
+      hint: 'Arraste até os 4 cantos do quebra-cabeça (ou onde eles ficam). A amarela (nº 1) é o canto superior esquerdo da ARTE; use Girar se a foto estiver de lado.',
+      corners: saved,
+      cols: p.cols,
+      rows: p.rows,
+      askMat: true,
+    });
+    if (!res) return;
+    try { localStorage.setItem(savedKey, JSON.stringify(res.corners)); } catch (_) {}
+
+    show(scanLoading, 'flex');
+    scanLoadingText.textContent = serviceStatus.api === 'ok' ? 'Analisando o tabuleiro…' : 'Acordando o servidor… pode levar até 1 minuto.';
+    try {
+      const native = Grid.nativeCell(img, res.corners, p.cols, p.rows);
+      const cellW = Math.max(20, Math.min(40, Math.round(native.w)));
+      const cellH = Math.max(12, Math.round(cellW * Grid.cellAspect(p, img, res.corners)));
+      const board = Grid.rectify(img, res.corners, { cols: p.cols, rows: p.rows, cellW, cellH, margin: SCAN_MARGIN });
+      const boardBlob = await Grid.canvasToBlob(board, 0.9);
+
+      const form = new FormData();
+      form.append('box_file', grid.artBlob, 'art.jpg');
+      form.append('board_file', boardBlob, 'board.jpg');
+      form.append('cols', p.cols);
+      form.append('rows', p.rows);
+      form.append('margin', String(SCAN_MARGIN));
+      if (res.matPoint) {
+        // Ponto tocado na foto → posição dentro do tabuleiro retificado (com a margem)
+        const toUnit = Grid.homography(res.corners.map(([x, y]) => [x * img.width, y * img.height]), [[0, 0], [1, 0], [1, 1], [0, 1]]);
+        const [u, v] = Grid.apply(toUnit, res.matPoint[0] * img.width, res.matPoint[1] * img.height);
+        const mx = (u * p.cols + SCAN_MARGIN) / (p.cols + 2 * SCAN_MARGIN);
+        const my = (v * p.rows + SCAN_MARGIN) / (p.rows + 2 * SCAN_MARGIN);
+        if (mx >= 0 && mx <= 1 && my >= 0 && my <= 1) form.append('mat_points', JSON.stringify([[mx, my]]));
+      }
+
+      if (apiWakeup) await apiWakeup;
+      const resp = await fetchWithTimeout(`${getApiUrl()}/api/scan-board`, { method: 'POST', headers: await authHeaders(), body: form }, 120000);
+      if (!resp.ok) throw new Error(await apiErrorMessage(resp, 'Não foi possível analisar o tabuleiro.'));
+      const data = await resp.json();
+      setServiceStatus('api', 'ok', 'Online');
+
+      grid.scanMap = data.placed_map;
+      scanOverlay.src = `data:image/jpeg;base64,${data.overlay_base64}`;
+      show(scanDetails);
+      updateGridCounts();
+      await renderMapImage();
+      if (grid.cell) selectCell(grid.cell.col, grid.cell.row);
+      notify(`Tabuleiro escaneado: ${data.placed} montadas, ${data.missing} faltando.`, 'success', 6000);
+      try {
+        await persistScanMap();
+      } catch (err) {
+        notify(`Mapa salvo só neste aparelho: ${err.message}`, 'error');
+      }
+    } catch (err) {
+      notify(err.name === 'AbortError' ? 'O servidor demorou demais. Tente de novo em instantes.' : err.message, 'error', 7000);
+    } finally {
+      hide(scanLoading, 'flex');
+    }
+  });
+}
+
+// ==========================================
+// 8. SCANNER DE CÂMERA EM TEMPO REAL (AR)
 // ==========================================
 const btnOpenRealtimeScanner = document.getElementById('btnOpenRealtimeScanner');
 const scannerModal = document.getElementById('scannerModal');
@@ -1232,7 +1596,7 @@ function playSuccessChime() {
 
 btnOpenRealtimeScanner.addEventListener('click', async () => {
   if (!hasTarget()) {
-    notify('Primeiro marque o buraco no tabuleiro ou um ponto na imagem da caixa.', 'info');
+    notify(gridActive() ? 'Primeiro escolha no mapa a peça que falta.' : 'Primeiro toque no ponto da imagem da caixa onde a peça fica.', 'info');
     document.getElementById('step1Title').scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
@@ -1334,7 +1698,8 @@ async function scanFrame(session) {
   try {
     // 1. Captura o frame atual do vídeo em um canvas temporário
     const captureCanvas = document.createElement('canvas');
-    const targetW = 960;
+    // Mapa: a mesa pode ter centenas de peças pequenas, então manda o quadro com mais resolução
+    const targetW = Math.min(scannerVideo.videoWidth, gridActive() ? 1920 : 960);
     const targetH = Math.round((scannerVideo.videoHeight * targetW) / scannerVideo.videoWidth);
     captureCanvas.width = targetW;
     captureCanvas.height = targetH;
@@ -1344,10 +1709,11 @@ async function scanFrame(session) {
     if (!frameBlob) return;
 
     // 2. Envia só as coordenadas de volta (annotate=false): resposta leve a cada quadro
-    const res = await fetchWithTimeout(`${getApiUrl()}/api/find-piece`, {
+    const byCell = gridActive();
+    const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: buildFindPieceForm(frameBlob, { annotate: false })
+      body: byCell ? buildFindCellForm(frameBlob, { annotate: false }) : buildFindPieceForm(frameBlob, { annotate: false })
     }, 60000);
 
     if (session !== scanSession) return;
@@ -1360,7 +1726,11 @@ async function scanFrame(session) {
     if (res.ok) {
       const data = await res.json();
       if (session !== scanSession) return;
-      renderARMatch(data, targetW, targetH);
+      // Formato comum: a busca por célula devolve candidatos; a avulsa, uma peça só
+      renderARMatch(data.candidates
+        ? { confident: data.confident, candidates: data.candidates }
+        : { confident: data.confident, candidates: [{ rank: 1, bbox: data.bbox, centroid: data.centroid, rotation_deg: data.rotation_deg }], shape_similarity: data.shape_similarity },
+        targetW, targetH);
     } else {
       clearAROverlay();
       setLocked(false);
@@ -1410,8 +1780,23 @@ function renderARMatch(data, frameW, frameH) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, t.viewW, t.viewH);
 
-  const [, , bw, bh] = data.bbox;
-  const [cx, cy] = data.centroid;
+  // Demais candidatos: círculos finos numerados (o nº 1 é desenhado por cima, em destaque)
+  data.candidates.slice(1).forEach((c) => {
+    const x = c.centroid[0] * t.scale + t.offsetX, y = c.centroid[1] * t.scale + t.offsetY;
+    const r = Math.max(c.bbox[2], c.bbox[3]) * t.scale * 0.7;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(226, 232, 240, 0.85)';
+    ctx.stroke();
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(String(c.rank), x + r * 0.7, y - r * 0.7);
+  });
+
+  const best = data.candidates[0];
+  const [, , bw, bh] = best.bbox;
+  const [cx, cy] = best.centroid;
 
   const screenCx = cx * t.scale + t.offsetX;
   const screenCy = cy * t.scale + t.offsetY;
@@ -1454,7 +1839,7 @@ function renderARMatch(data, frameW, frameH) {
   }
   setLocked(true);
 
-  let detailText = rotationLabel(data.rotation_deg);
+  let detailText = rotationLabel(best.rotation_deg);
   if (data.shape_similarity >= MIN_SHAPE_TO_SHOW) {
     detailText += ` · formato ${data.shape_similarity}% compatível`;
   }
@@ -1469,7 +1854,7 @@ function clearAROverlay() {
 }
 
 // ==========================================
-// 8. INICIALIZAÇÃO
+// 9. INICIALIZAÇÃO
 // ==========================================
 window.addEventListener('DOMContentLoaded', () => {
   checkReady();
