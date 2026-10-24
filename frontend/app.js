@@ -1257,11 +1257,11 @@ function renderResultPhotos(data) {
   }
   const best = data.candidates ? data.candidates[0].photo : (data.photo || 0);
   showPhoto(best);
-  // Fotos sem a folha A4: a busca seguiu, mas sem escala nem branco de referência
-  const noPaper = (data.photos || []).map((p, i) => (p.on_paper ? null : i + 1)).filter(Boolean);
-  if (noPaper.length) {
-    paperNotice.textContent = (data.photos.length > 1 ? `Não achei a folha A4 inteira na foto ${noPaper.join(', ')}.` : 'Não achei a folha A4 inteira na foto.')
-      + ' A busca seguiu, mas com a folha toda visível ela fica mais precisa.';
+  // Fotos sem fundo branco (nem folha nem mesa clara): a busca seguiu, mas sem corrigir a cor da luz
+  const noWhite = (data.photos || []).map((p, i) => (p.white_ref === false ? i + 1 : null)).filter(Boolean);
+  if (noWhite.length) {
+    paperNotice.textContent = (data.photos.length > 1 ? `Não achei fundo branco na foto ${noWhite.join(', ')}.` : 'Não achei fundo branco na foto.')
+      + ' A busca seguiu, mas sobre uma folha branca a cor das peças fica bem mais precisa.';
     show(paperNotice);
   } else {
     hide(paperNotice);

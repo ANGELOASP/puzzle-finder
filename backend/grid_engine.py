@@ -41,9 +41,11 @@ KNOWN_BODY_STEPS = (0.92, 1.0, 1.08)
 MATCH_REACH = 0.3
 MIN_TEXTURE_STD = 8.0
 
-# Confiança da busca por célula (calibrada no bench sintético de peças com encaixes)
-MIN_CELL_SCORE = 0.62
-MIN_CELL_MARGIN = 0.06
+# Confiança da busca por célula ("achei" em verde). Calibrada no bench sintético com a peça PRESENTE
+# e AUSENTE da foto (no uso real a foto tem só parte das peças): nota 0,70 e margem 0,12 sobre a 2ª
+# deram 0 erros com confiança e 2/60 falsos "achei" com a peça ausente (0,62/0,06 dava 11/60)
+MIN_CELL_SCORE = 0.70
+MIN_CELL_MARGIN = 0.12
 
 SIDES = ("top", "right", "bottom", "left")
 # Formato dos lados (fração do lado do corpo): faixa do meio (aba/encaixe), faixa perto dos cantos
@@ -531,19 +533,37 @@ def _color_similarity(h1, h2):
 
 class ColorNormalizer:
     """
-    Leva as cores da foto da mesa para as da caixa (transferência de Reinhard em Lab): média e
-    desvio de cada canal das peças viram os da arte das células que elas devem preencher. Corrige o
-    que muda entre as duas fotos (luz quente, câmera, impressão mais saturada) — no bench com fotos
-    reais, a célula certa saiu da 80ª para a 1ª-3ª posição entre 201 pela cor.
+    Leva as cores das fotos das peças para as da caixa: transferência linear de Monge-Kantorovich em
+    Lab — iguala média E covariância (não só o desvio de cada canal, como Reinhard), então corrige
+    juntas a saturação (a caixa sai ~2× mais saturada que as peças) e a rotação de tom (caixa mais
+    avermelhada). No bench com fotos reais, a célula certa saiu da 80ª para a 1ª-2ª posição entre
+    201 só pela cor (MKL 45% em 1º com a referência certa, Reinhard 39%).
     """
 
-    def __init__(self, piece_px, art_px):
-        self.mb, self.ma = piece_px.mean(0), art_px.mean(0)
-        self.k = np.clip(art_px.std(0) / (piece_px.std(0) + 1e-6), 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)
+    def __init__(self, piece_px, art_px, n_pieces=None):
+        self.ms, self.mt = piece_px.mean(0), art_px.mean(0)
+        cs, ct = np.cov(piece_px.T), np.cov(art_px.T)
+        # Poucas peças: a covariância cruzada das peças é ruído de amostra — encolhe para a diagonal
+        # (no limite vira Reinhard, canal por canal)
+        lam = COLOR_SHRINK_PIECES / (COLOR_SHRINK_PIECES + n_pieces) if n_pieces else 0.0
+        cs = (1 - lam) * cs + lam * np.diag(np.diag(cs))
+        ct = (1 - lam) * ct + lam * np.diag(np.diag(ct))
+        rs = _sqrtm(cs)
+        rs_inv = np.linalg.inv(rs)
+        t = rs_inv @ _sqrtm(rs @ ct @ rs) @ rs_inv
+        # Limita o quanto um eixo pode esticar/encolher (amostra pequena ou cores muito diferentes)
+        w, v = np.linalg.eigh((t + t.T) / 2)
+        self.t = (v @ np.diag(np.clip(w, 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)) @ v.T).astype(np.float32)
 
     def __call__(self, lab_u8):
-        out = (lab_u8.astype(np.float32) - self.mb) * self.k + self.ma
-        return np.clip(out, 0, 255).astype(np.uint8)
+        x = lab_u8.reshape(-1, 3).astype(np.float32) - self.ms.astype(np.float32)
+        out = x @ self.t.T + self.mt.astype(np.float32)
+        return np.clip(out, 0, 255).astype(np.uint8).reshape(lab_u8.shape)
+
+
+def _sqrtm(c):
+    w, v = np.linalg.eigh(c)
+    return v @ np.diag(np.sqrt(np.maximum(w, 1e-6))) @ v.T
 
 
 def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
@@ -569,12 +589,14 @@ def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
     else:
         art_px = art.reshape(-1, 3)
     art_px = art_px[rng.choice(len(art_px), min(len(art_px), 200000), replace=False)]
-    return ColorNormalizer(np.concatenate(piece_px).astype(np.float32), art_px.astype(np.float32))
+    return ColorNormalizer(np.concatenate(piece_px).astype(np.float64), art_px.astype(np.float64), len(piece_px))
 
 
 # Histograma de cor (luz, a, b) e quanto a normalização de cor pode esticar o desvio de um canal
 HIST_BINS = (4, 16, 16)
-COLOR_MAX_STRETCH = 2.0
+COLOR_MAX_STRETCH = 2.5
+# Encolhimento da covariância para a diagonal: metade com este número de peças
+COLOR_SHRINK_PIECES = 60
 # Mínimo de células faltando para usar só elas como referência de cor da arte
 COLOR_MIN_MISSING = 20
 

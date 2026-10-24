@@ -25,6 +25,9 @@ PAPER_TINT_TOL = 14.0
 PAPER_UNIFORM_TOL = 12.0
 PAPER_MIN_FILL = 0.35
 PAPER_MIN_CONNECTED = 0.6
+# Fundo claro sem a folha inteira: luz mínima (escala 0-255) e tinta máxima (a, b) do fundo
+LIGHT_BG_MIN_L = 140.0
+LIGHT_BG_MAX_TINT = 20.0
 # Branco de referência depois do balanço (abaixo de 255 para não estourar o papel)
 WHITE_LEVEL = 235.0
 # Ganho máximo por canal no balanço de branco (luz muito colorida ou papel sombreado)
@@ -152,6 +155,36 @@ def white_balance(img_bgr):
     ref = np.median(f[paper], axis=0)
     gains = np.clip(WHITE_LEVEL / np.maximum(ref, 1.0), 1.0 / MAX_GAIN, MAX_GAIN)
     return np.clip(f * gains, 0, 255).astype(np.uint8), gains
+
+
+def balance_pieces_on_background(img_bgr, pieces):
+    """
+    Folha (ou mesa clara) ocupando a foto, sem os cantos à vista: o fundo em volta das peças ainda é o
+    branco de referência daquela luz. Corrige só os recortes das peças (cor e desenho comparados com
+    a caixa), não a foto: a separação já foi feita. Retorna os ganhos BGR aplicados, ou None.
+    """
+    if not pieces:
+        return None
+    free = np.ones(img_bgr.shape[:2], np.uint8)
+    for p in pieces:
+        x, y, w, h = p["bbox"]
+        free[y:y + h, x:x + w][p["mask"] > 0] = 0
+    free = cv2.erode(free, np.ones((15, 15), np.uint8))
+    if free.sum() < 0.2 * free.size:
+        return None
+    bg = img_bgr[free > 0].astype(np.float32)
+    ref = np.median(bg, axis=0)
+    lab = cv2.cvtColor(ref.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2LAB).reshape(3).astype(np.float32)
+    tint = float(np.hypot(lab[1] - 128, lab[2] - 128))
+    # Só fundo claro e quase neutro (papel, mesa branca); mesa escura ou de madeira não é referência
+    if lab[0] < LIGHT_BG_MIN_L or tint > LIGHT_BG_MAX_TINT:
+        return None
+    gains = np.clip(ref.mean() / np.maximum(ref, 1.0), 1.0 / MAX_GAIN, MAX_GAIN)
+    for p in pieces:
+        for key in ("crop", "upright"):
+            if p.get(key) is not None:
+                p[key] = np.clip(p[key].astype(np.float32) * gains, 0, 255).astype(np.uint8)
+    return gains
 
 
 class TablePhoto:

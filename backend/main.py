@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPExcept
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import grid_engine
-from paper import TablePhoto
+from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
 
 # A foto da mesa vai em alta resolução (centenas de peças pequenas): até ~3000 px ≈ 2-5 MB
@@ -137,6 +137,9 @@ def segment_tables(tables, piece_mm=None):
     for i, data in enumerate(tables):
         photo = TablePhoto(img_bytes_to_cv2(data, MAX_TABLE_SIDE))
         found = engine.segment_table_pieces(photo.image)
+        # Branco de referência: a folha A4 inteira (já corrigida na foto endireitada) ou o papel/mesa
+        # clara em volta das peças quando a folha ocupa a foto toda (o padrão)
+        photo.white_ref = photo.on_paper or balance_pieces_on_background(photo.image, found) is not None
         for p in found:
             p["photo"] = i
             if photo.px_per_mm and piece_mm:
@@ -157,7 +160,8 @@ def piece_location(photos, piece):
 
 
 def photos_summary(photos):
-    return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "pieces": p.pieces} for p in photos]
+    return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "white_ref": p.white_ref,
+             "pieces": p.pieces} for p in photos]
 
 
 def fit_jpeg(img, max_side=2000):
