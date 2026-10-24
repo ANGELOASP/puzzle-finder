@@ -639,12 +639,73 @@ async function onPuzzleSelected(puzzle) {
     } else {
       loadBoxImage(imageResult.value);
       show(boxSavedBadge);
+      offerGrid(puzzle, imageResult.value);
     }
   } else {
     console.error('Erro ao carregar imagem da caixa:', imageResult.reason);
     notify('Não foi possível carregar a imagem da caixa salva.', 'error');
   }
 }
+
+// ---------- Quebra-cabeça sem grade: sugere colunas × linhas para ativar o mapa ----------
+// Pares colunas × linhas que dão o total (ou ficam a até 2% dele), o mais perto do formato da foto da caixa
+function suggestGrid(total, aspect) {
+  let best = null;
+  for (let r = 2; r * r <= total * 1.02; r++) {
+    for (const c of [Math.floor(total / r), Math.ceil(total / r)]) {
+      if (c < r || Math.abs(c * r - total) > total * 0.02) continue;
+      for (const [cc, rr] of [[c, r], [r, c]]) {
+        const cost = Math.abs(Math.log((cc / rr) / aspect)) + (cc * rr === total ? 0 : 0.3);
+        if (!best || cost < best.cost) best = { cols: cc, rows: rr, cost };
+      }
+    }
+  }
+  return best;
+}
+
+const gridOffer = document.getElementById('gridOffer');
+const btnGridOfferUse = document.getElementById('btnGridOfferUse');
+let gridSuggestion = null;
+
+async function offerGrid(puzzle, boxBlob) {
+  gridSuggestion = null;
+  hide(btnGridOfferUse);
+  if (!puzzle.total_pieces) return;
+  let aspect = 1.4; // caixa típica em paisagem
+  try {
+    const bmp = await createImageBitmap(boxBlob);
+    aspect = bmp.width / bmp.height;
+    bmp.close();
+  } catch (_) { /* fica o formato típico */ }
+  if (currentPuzzle !== puzzle) return;
+  gridSuggestion = suggestGrid(puzzle.total_pieces, aspect);
+  if (!gridSuggestion) return;
+  const { cols, rows } = gridSuggestion;
+  btnGridOfferUse.textContent = `Usar ${cols} colunas × ${rows} linhas`;
+  show(btnGridOfferUse);
+  document.getElementById('gridOfferText').textContent =
+    `${puzzle.total_pieces} peças no formato desta caixa parecem ${cols} × ${rows}${cols * rows === puzzle.total_pieces ? '' : ` = ${cols * rows}`}. `
+    + 'Com a grade, o app divide a arte em peças numeradas, escaneia o que já está montado e mostra onde vai cada peça solta.';
+}
+
+btnGridOfferUse.addEventListener('click', async () => {
+  const p = currentPuzzle;
+  if (!p || !gridSuggestion || !supabaseClient) return;
+  const { cols, rows } = gridSuggestion;
+  btnGridOfferUse.disabled = true;
+  try {
+    const { error } = await supabaseClient.from('puzzles')
+      .update({ cols, rows, total_pieces: cols * rows }).eq('id', p.id);
+    if (error) throw error;
+    notify(`Mapa ativado: ${cols} × ${rows}. Agora marque os 4 cantos da arte.`, 'success');
+    await loadPuzzlesFromSupabase(p.id);
+  } catch (err) {
+    notify(`Não foi possível salvar: ${err.message}`, 'error', 8000);
+  } finally {
+    btnGridOfferUse.disabled = false;
+  }
+});
+document.getElementById('btnGridOfferOther').addEventListener('click', () => { if (currentPuzzle) openPuzzleForm(currentPuzzle); });
 
 // Bucket privado: baixa pela sessão do usuário (cadastros antigos podem ter só a URL pública)
 async function downloadBoxImage(puzzle) {
@@ -1189,6 +1250,9 @@ async function buildFindCellForm(tableBlobs, { annotate = true } = {}) {
   if (currentPuzzle.width_cm > 0) formData.append('piece_mm', String((currentPuzzle.width_cm * 10) / currentPuzzle.cols));
   // As peças soltas são as que faltam: as cores dessas células da arte calibram as cores das fotos
   if (grid.scanMap) formData.append('scan_map', grid.scanMap);
+  // Peças já confirmadas neste quebra-cabeça: o servidor aprende com elas a diferença de cor
+  const calib = Workspace.calibPayload();
+  if (calib.length) formData.append('calib', JSON.stringify(calib));
   try {
     const hole = await holeBlob();
     if (hole) formData.append('hole_file', hole, 'hole.jpg');

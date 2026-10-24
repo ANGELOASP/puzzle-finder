@@ -399,6 +399,10 @@
           </button>
           <div id="stepPiecesBody" class="wz-body" hidden>
             <div id="photosSlotGrid"></div>
+            <p id="calibInfo" class="hidden flex items-center gap-2 text-xs text-slate-400">
+              <span id="calibText" class="flex-1"></span>
+              <button type="button" id="btnCalibReset" class="shrink-0 font-semibold text-slate-300 hover:text-white underline underline-offset-2 h-8">Esquecer</button>
+            </p>
           </div>
         </li>
       </ol>
@@ -475,7 +479,16 @@
         <h2 id="step1Title" class="text-xl md:text-2xl font-bold tracking-tight"><span id="step1Text">Escolha a peça que falta</span></h2>
         <span id="step1Sub" class="text-sm text-slate-400">tocando na imagem da caixa</span>
       </div>
-      <p class="text-sm text-slate-400 -mt-2">Cadastre colunas e linhas no quebra-cabeça (Editar) para usar o mapa, o escaneamento do tabuleiro e a busca pelas peças.</p>
+      <div id="gridOffer" class="panel ring-emerald-400/50 flex flex-col gap-3" style="box-shadow: inset 0 0 0 1.5px rgb(52 211 153 / .55)">
+        <div>
+          <h3 class="font-bold text-[15px]">Ative o mapa deste quebra-cabeça</h3>
+          <p id="gridOfferText" class="text-sm text-slate-400 mt-1">Com colunas × linhas, o app divide a arte em peças numeradas, escaneia o que já está montado e mostra onde vai cada peça solta.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" id="btnGridOfferUse" class="btn-primary hidden"></button>
+          <button type="button" id="btnGridOfferOther" class="btn-quiet">Informar colunas e linhas</button>
+        </div>
+      </div>
       <div class="grid gap-4 md:grid-cols-2 md:items-start">
         <!-- Imagem da caixa -->
         <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
