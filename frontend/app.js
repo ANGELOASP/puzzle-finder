@@ -903,6 +903,7 @@ const boxViewer = new InteractiveImageViewer({
 });
 
 const tableInput = document.getElementById('tableInput');
+const tableInputGallery = document.getElementById('tableInputGallery');
 const tableInputText = document.getElementById('tableInputText');
 const tablePreview = document.getElementById('tablePreview');
 const tableContainer = document.getElementById('tableContainer');
@@ -1026,17 +1027,19 @@ for (const input of [boxInput, boxInputReplace]) {
   });
 }
 
-// Peças Soltas na Mesa
-tableInput.addEventListener('change', async () => {
-  const blob = await readPickedImage(tableInput);
-  if (!blob) return;
-  tableBlob = blob;
-  setObjectUrl(tablePreview, blob);
-  show(tableContainer, 'flex');
-  hide(tablePlaceholder, 'md:flex');
-  tableInputText.textContent = 'Trocar foto';
-  checkReady();
-});
+// Peças Soltas na Mesa (câmera ou galeria)
+for (const input of [tableInput, tableInputGallery]) {
+  input.addEventListener('change', async () => {
+    const blob = await readPickedImage(input);
+    if (!blob) return;
+    tableBlob = blob;
+    setObjectUrl(tablePreview, blob);
+    show(tableContainer, 'flex');
+    hide(tablePlaceholder, 'md:flex');
+    tableInputText.textContent = 'Tirar outra';
+    checkReady();
+  });
+}
 
 function hasTarget() {
   return Boolean((boardBlob && hasSelectedBoard) || (boxBlob && hasSelectedBox));
