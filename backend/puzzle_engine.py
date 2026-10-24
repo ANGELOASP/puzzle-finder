@@ -37,72 +37,169 @@ def _rotate(img, code):
 
 class PuzzleEngine:
 
-    def segment_table_pieces(self, table_img_bgr, min_area=350, max_area_fraction=0.25):
+    def segment_table_pieces(self, table_img_bgr, max_area_fraction=0.25):
         """
-        Separa as peças soltas do fundo da mesa.
-        A cor do fundo é estimada pela borda da foto, então funciona em mesa clara, escura ou colorida.
+        Separa as peças soltas do fundo da mesa, mesmo com centenas de peças e reflexos.
+        - Fundo LOCAL (mediana numa janela de várias peças): absorve reflexos, sombras e mesa
+          de vidro escura ou clara, e funciona com a mesa coberta de peças.
+        - Watershed sobre a transformada de distância: separa peças encostadas ou ligadas por brilho.
         """
         h, w = table_img_bgr.shape[:2]
-        lab = cv2.cvtColor(cv2.GaussianBlur(table_img_bgr, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab = cv2.cvtColor(cv2.GaussianBlur(table_img_bgr, (3, 3), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+        s_ = 400.0 / max(h, w)
+        small = cv2.resize(lab, None, fx=s_, fy=s_, interpolation=cv2.INTER_AREA)
 
-        border = max(4, int(min(h, w) * 0.02))
-        edge_pixels = np.concatenate([
-            lab[:border].reshape(-1, 3), lab[-border:].reshape(-1, 3),
-            lab[:, :border].reshape(-1, 3), lab[:, -border:].reshape(-1, 3),
-        ])
-        background = np.median(edge_pixels, axis=0)
+        # 1ª passada com janela larga só para medir o tamanho típico das peças;
+        # 2ª com janela de ~6 peças: acompanha reflexos sem "engolir" peças grandes
+        fg = self._foreground(lab, small, int(round(max(small.shape[:2]) * 0.2)))
+        n0, _, st0, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+        if n0 > 1:
+            typical_area = float(np.median(st0[1:, cv2.CC_STAT_AREA]))
+            diameter_small = np.sqrt(max(typical_area, 1.0)) * s_
+            fg = self._foreground(lab, small, int(round(np.clip(6 * diameter_small, 15, max(small.shape[:2]) * 0.25))))
 
-        dist = np.linalg.norm(lab - background, axis=2)
-        dist = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        _, fg = cv2.threshold(dist, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=1)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel, iterations=2)
-        contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-        max_area = h * w * max_area_fraction
+        # Manchas bem maiores que uma peça típica são peças encostadas: só essas passam pelo
+        # watershed (dividir as normais cortaria peças com "cintura" entre dois encaixes)
+        n1, cc1, st1, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+        regions = fg.copy()
+        # Raio do corpo pelos picos da transformada de distância: cada peça tem um, mesmo dentro de
+        # uma "corrente" de peças encostadas — a área mediana não serve quando quase todas se tocam
+        dt_all = cv2.distanceTransform(fg, cv2.DIST_L2, 5)
+        peaks = dt_all[(dt_all == cv2.dilate(dt_all, np.ones((5, 5), np.uint8))) & (dt_all > 1.5)]
+        # Pontas das abas também são picos (raio menor): o corpo é o grupo de cima
+        radius = float(np.percentile(peaks, 75)) if peaks.size else 3.0
+        single_area = 7.0 * radius * radius  # corpo ≈ 2,6 r de lado (com abas/encaixes)
+        # Miolos fortes (bem dentro de um corpo): a "cintura" entre dois encaixes não chega a 0,75 r
+        strong = (dt_all > 0.75 * radius).astype(np.uint8)
+        n_s, s_lab = cv2.connectedComponents(strong)
+        big_ids = []
+        for i in range(1, n1):
+            if st1[i, cv2.CC_STAT_AREA] > 1.5 * single_area:
+                x0, y0, ww, hh = st1[i, :4]
+                inside = s_lab[y0:y0 + hh, x0:x0 + ww][cc1[y0:y0 + hh, x0:x0 + ww] == i]
+                if len(np.unique(inside[inside > 0])) >= 2:  # 2+ miolos = 2+ peças encostadas
+                    big_ids.append(i)
+        if big_ids:
+            big = np.isin(cc1, big_ids)
+            fg_big = (big & (fg > 0)).astype(np.uint8) * 255
+            seeds = (strong.astype(bool) & big).astype(np.uint8)
+            _, markers = cv2.connectedComponents(seeds)
+            markers = markers + 1
+            markers[(fg_big > 0) & (seeds == 0)] = 0
+            ws = cv2.watershed(cv2.cvtColor(fg_big, cv2.COLOR_GRAY2BGR), markers.astype(np.int32))
+            regions[big & (ws == -1)] = 0  # linhas de corte entre as peças grudadas
+
+        # Cada região vira uma peça
+        n, cc, stats, centroids = cv2.connectedComponentsWithStats((regions > 0).astype(np.uint8), connectivity=4)
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        if not len(areas):
+            return []
+        min_area = max(30.0, single_area * 0.25)
+        max_area = min(h * w * max_area_fraction, single_area * 8)
+
         pieces = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
+        for i in range(1, n):
+            x, y, bw, bh, area = stats[i]
             if not (min_area < area < max_area):
                 continue
-
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.drawContours(mask, [cnt], -1, 255, -1)
-
-            M = cv2.moments(cnt)
-            cx = int(M["m10"] / M["m00"]) if M["m00"] != 0 else x + bw // 2
-            cy = int(M["m01"] / M["m00"]) if M["m00"] != 0 else y + bh // 2
-
+            mask = (cc[y:y + bh, x:x + bw] == i).astype(np.uint8) * 255
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not cnts:
+                continue
+            cnt = max(cnts, key=cv2.contourArea) + np.array([[x, y]])
+            crop = table_img_bgr[y:y + bh, x:x + bw]
+            upright, upright_mask = self._deskew_local(crop, mask)
             pieces.append({
                 "id": len(pieces) + 1,
-                "bbox": (x, y, bw, bh),
-                "centroid": (cx, cy),
-                "crop": table_img_bgr[y:y + bh, x:x + bw],
-                "mask": mask[y:y + bh, x:x + bw],
+                "bbox": (int(x), int(y), int(bw), int(bh)),
+                "centroid": (int(round(centroids[i][0])), int(round(centroids[i][1]))),
+                "crop": crop,
+                "mask": mask,
                 "contour": cnt,
-                "area": area,
-                "upright": self._deskew(table_img_bgr, cnt),
+                "area": float(area),
+                "upright": upright,
+                "upright_mask": upright_mask,
             })
         return pieces
 
-    def _deskew(self, img_bgr, contour):
-        """Recorta a peça alinhada aos eixos (remove a inclinação de até 45°)."""
-        (rcx, rcy), (rw, rh), angle = cv2.minAreaRect(contour)
-        if rw < 2 or rh < 2:
-            return None
-        if angle > 45:
-            angle -= 90
-            rw, rh = rh, rw
-        elif angle < -45:
-            angle += 90
-            rw, rh = rh, rw
-        M = cv2.getRotationMatrix2D((rcx, rcy), angle, 1.0)
-        M[0, 2] += rw / 2 - rcx
-        M[1, 2] += rh / 2 - rcy
-        return cv2.warpAffine(img_bgr, M, (int(round(rw)), int(round(rh))), flags=cv2.INTER_LINEAR)
+    def _foreground(self, lab, small, k):
+        """Máscara peça × fundo, com o fundo estimado pela mediana numa janela de k px (na escala `small`)."""
+        h, w = lab.shape[:2]
+        k = max(3, int(k) | 1)
+        bg = np.dstack([cv2.medianBlur(np.clip(small[..., c], 0, 255).astype(np.uint8), k) for c in range(3)])
+        bg = cv2.resize(bg.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+        # Cor pesa mais que luz: reflexos mudam a luminância, peças mudam a cor
+        dist = np.linalg.norm((lab - bg) * np.array([1.0, 1.4, 1.4], np.float32), axis=2)
+        dist8 = np.clip(dist * 3, 0, 255).astype(np.uint8)
+        otsu, _ = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Otsu fica alto quando as peças contrastam muito e corta abas de cor parecida com a mesa:
+        # o ruído do próprio fundo (pixels claramente de fundo) serve de teto para o limiar
+        background = dist8[dist8 < otsu * 0.5]
+        noise = float(np.percentile(background, 99)) * 2.0 + 4.0 if background.size else otsu
+        _, fg = cv2.threshold(dist8, max(6.0, min(otsu, noise)), 255, cv2.THRESH_BINARY)
+        return fg
+
+    def _deskew_local(self, crop_bgr, crop_mask):
+        """_deskew a partir do recorte da peça (evita máscaras do tamanho da foto)."""
+        pad = 6
+        img = cv2.copyMakeBorder(crop_bgr, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+        m = cv2.copyMakeBorder(crop_mask, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not cnts:
+            return None, None
+        return self._deskew(img, m, max(cnts, key=cv2.contourArea))
+
+    def _body_angle(self, mask):
+        """
+        Inclinação do corpo da peça (graus, -45..45, mesmo sentido de getRotationMatrix2D).
+        Histograma (módulo 90°) da direção do gradiente da máscara suavizada, pesado pela intensidade:
+        os lados retos do corpo formam um pico; abas e encaixes são arcos e se espalham.
+        (minAreaRect se inclina para acompanhar as abas; projeções de pontos têm viés a 45°.)
+        """
+        # σ=3 apaga o serrilhado dos pixels (que puxaria a direção para 0°/90°)
+        m = cv2.GaussianBlur((mask > 127).astype(np.float32), (0, 0), 3.0)
+        gx = cv2.Sobel(m, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(m, cv2.CV_32F, 0, 1, ksize=3)
+        mag = np.hypot(gx, gy)
+        sel = mag > mag.max() * 0.2
+        ang = np.degrees(np.arctan2(gy[sel], gx[sel])) % 90.0
+        w = mag[sel]
+        hist, _ = np.histogram(ang, bins=180, range=(0, 90), weights=w)
+        # suaviza circularmente (0° e 90° são a mesma direção)
+        k = np.exp(-0.5 * (np.arange(-6, 7) / 2.0) ** 2)
+        hist = np.convolve(np.concatenate([hist[-6:], hist, hist[:6]]), k, mode="same")[6:-6]
+        peak = (np.argmax(hist) + 0.5) * 0.5
+        # refina com a média (período 90°) das direções a até 6° do pico
+        d = (ang - peak + 45) % 90 - 45
+        near = np.abs(d) < 6
+        a = (peak + (np.average(d[near], weights=w[near]) if near.any() else 0.0)) % 90
+        a = a - 90.0 if a > 45 else a
+        # gradiente medido com y para baixo: inclinação +a na imagem = -a em getRotationMatrix2D
+        return -a
+
+    def _deskew(self, img_bgr, mask, contour):
+        """Recorta a peça (imagem e máscara) alinhada aos eixos pelo corpo, removendo a inclinação de até 45°."""
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 4 or h < 4:
+            return None, None
+        pad = 4
+        y1, y2, x1b, x2b = max(0, y - pad), y + h + pad, max(0, x - pad), x + w + pad
+        angle = self._body_angle(mask[y1:y2, x1b:x2b])
+        cx, cy = x + w / 2.0, y + h / 2.0
+        M = cv2.getRotationMatrix2D((cx, cy), -angle, 1.0)
+        # Caixa da máscara girada → recorte justo
+        pts = cv2.transform(contour.reshape(-1, 1, 2).astype(np.float32), M).reshape(-1, 2)
+        x1, y1 = pts.min(0)
+        x2, y2 = pts.max(0)
+        M[0, 2] -= x1
+        M[1, 2] -= y1
+        size = (int(np.ceil(x2 - x1)) + 1, int(np.ceil(y2 - y1)) + 1)
+        return (cv2.warpAffine(img_bgr, M, size, flags=cv2.INTER_LINEAR),
+                cv2.warpAffine(mask, M, size, flags=cv2.INTER_NEAREST))
 
     def extract_box_patch(self, box_bgr, x_ratio, y_ratio, total_pieces=None):
         """

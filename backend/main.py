@@ -4,10 +4,13 @@ from typing import Optional
 from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+import grid_engine
 from puzzle_engine import PuzzleEngine
 
-# O frontend já comprime as fotos para ~1600 px (≈300 KB); 8 MB cobre fotos originais com folga
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+# A foto da mesa vai em alta resolução (centenas de peças pequenas): até ~3000 px ≈ 2-5 MB
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+# Lado máximo processado da foto da mesa: mais que isso estoura a memória do plano gratuito
+MAX_TABLE_SIDE = 3000
 
 app = FastAPI(title="PuzzleFinder API")
 app.add_middleware(
@@ -78,12 +81,29 @@ async def read_upload(upload: Optional[UploadFile]) -> Optional[bytes]:
         raise HTTPException(status_code=413, detail="Imagem muito grande (máx. 8 MB).")
     return data or None
 
-def img_bytes_to_cv2(image_bytes: bytes):
+def img_bytes_to_cv2(image_bytes: bytes, max_side: Optional[int] = None):
     np_arr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(status_code=400, detail="Erro ao decodificar a imagem.")
+    if max_side and max(img.shape[:2]) > max_side:
+        f = max_side / float(max(img.shape[:2]))
+        img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     return img
+
+def parse_points(raw: Optional[str]):
+    """'[[x,y],...]' normalizado 0..1 → lista de tuplas (ignora valores inválidos)."""
+    if not raw:
+        return None
+    try:
+        pts = [(float(p[0]), float(p[1])) for p in json.loads(raw)]
+    except (ValueError, TypeError, IndexError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Pontos inválidos.")
+    return [p for p in pts if 0 <= p[0] <= 1 and 0 <= p[1] <= 1] or None
+
+def check_grid(cols: int, rows: int):
+    if not (2 <= cols <= 200 and 2 <= rows <= 200):
+        raise HTTPException(status_code=400, detail="Grade inválida: colunas e linhas entre 2 e 200.")
 
 def cv2_to_base64_jpeg(cv2_img):
     _, buffer = cv2.imencode('.jpg', cv2_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -176,3 +196,106 @@ def process_find_piece(table_bytes, box_bytes, board_bytes,
         result["annotated_table_base64"] = cv2_to_base64_jpeg(annotated_table)
         result["slot_roi_base64"] = slot_roi_b64
     return result
+
+
+@app.post("/api/scan-board")
+async def scan_board(
+    box_file: UploadFile = File(...),
+    board_file: UploadFile = File(...),
+    cols: int = Form(...),
+    rows: int = Form(...),
+    margin: float = Form(0.0),
+    mat_points: Optional[str] = Form(None),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """
+    Mapa do tabuleiro: recebe a arte e o tabuleiro já retificados pelo app (cols × rows células;
+    o tabuleiro com `margin` células de mesa em volta) e diz quais células estão montadas.
+    """
+    check_grid(cols, rows)
+    box_bytes, board_bytes = await read_upload(box_file), await read_upload(board_file)
+    if box_bytes is None or board_bytes is None:
+        raise HTTPException(status_code=400, detail="Envie a arte e a foto do tabuleiro.")
+    points = parse_points(mat_points)
+    return await run_in_threadpool(process_scan, box_bytes, board_bytes, cols, rows, max(0.0, min(3.0, margin)), points)
+
+def process_scan(box_bytes, board_bytes, cols, rows, margin, points):
+    box = img_bytes_to_cv2(box_bytes)
+    board = img_bytes_to_cv2(board_bytes)
+    res = grid_engine.scan_board(box, board, cols, rows, margin, mat_points=points)
+    placed = res["placed"]
+    overlay = grid_engine.draw_scan(board, cols, rows, margin, placed)
+    if max(overlay.shape[:2]) > 1600:
+        f = 1600.0 / max(overlay.shape[:2])
+        overlay = cv2.resize(overlay, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    n_placed = int(placed.sum())
+    return {
+        "cols": cols,
+        "rows": rows,
+        # Linha por linha, de cima para baixo: '1' montada, '0' vazia
+        "placed_map": "".join("1" if v else "0" for v in placed.reshape(-1)),
+        "placed": n_placed,
+        "missing": cols * rows - n_placed,
+        "total": cols * rows,
+        "mat_found": res["mat_found"],
+        "confidence": round(float(res["confidence"].mean()), 3),
+        "overlay_base64": cv2_to_base64_jpeg(overlay),
+    }
+
+
+@app.post("/api/find-cell")
+async def find_cell(
+    table_file: UploadFile = File(...),
+    box_file: UploadFile = File(...),
+    cols: int = Form(...),
+    rows: int = Form(...),
+    col: int = Form(...),
+    row: int = Form(...),
+    top_k: int = Form(5),
+    annotate: bool = Form(True),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """Busca a peça da célula (col, row) da arte retificada entre as peças soltas na foto da mesa."""
+    check_grid(cols, rows)
+    if not (0 <= col < cols and 0 <= row < rows):
+        raise HTTPException(status_code=400, detail="Peça fora da grade.")
+    table_bytes, box_bytes = await read_upload(table_file), await read_upload(box_file)
+    if table_bytes is None or box_bytes is None:
+        raise HTTPException(status_code=400, detail="Envie a foto da mesa e a arte.")
+    return await run_in_threadpool(process_find_cell, table_bytes, box_bytes, cols, rows, col, row,
+                                   max(1, min(10, top_k)), annotate)
+
+def process_find_cell(table_bytes, box_bytes, cols, rows, col, row, top_k, annotate):
+    table = img_bytes_to_cv2(table_bytes, MAX_TABLE_SIDE)
+    box = img_bytes_to_cv2(box_bytes)
+    pieces = engine.segment_table_pieces(table)
+    if not pieces:
+        raise HTTPException(status_code=404, detail="Nenhuma peça encontrada na foto da mesa. Espalhe as peças sobre um fundo liso.")
+    patch = grid_engine.cell_patch(box, cols, rows, col, row)
+    ranked = grid_engine.match_cell(patch, pieces, top_k=top_k)
+    if not ranked:
+        raise HTTPException(status_code=404, detail="Não foi possível comparar as peças da foto.")
+    confident = grid_engine.is_confident(ranked)
+    result = {
+        "pieces_detected": len(pieces),
+        "confident": confident,
+        "frame_size": [table.shape[1], table.shape[0]],
+        "candidates": [{
+            "rank": i + 1,
+            "bbox": c["piece"]["bbox"],
+            "centroid": c["piece"]["centroid"],
+            "rotation_deg": c["rotation"],
+            "score": round(c["score"] * 100, 1),
+            "edge_ok": c["flats_ok"],
+        } for i, c in enumerate(ranked)],
+    }
+    if annotate:
+        annotated = grid_engine.draw_candidates(table, ranked, confident)
+        if max(annotated.shape[:2]) > 2000:
+            f = 2000.0 / max(annotated.shape[:2])
+            annotated = cv2.resize(annotated, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        result["annotated_table_base64"] = cv2_to_base64_jpeg(annotated)
+        x, y, w, h = ranked[0]["piece"]["bbox"]
+        result["piece_crop_base64"] = cv2_to_base64_jpeg(table[y:y + h, x:x + w])
+    return result
+

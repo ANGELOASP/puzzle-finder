@@ -41,6 +41,16 @@ update public.puzzles
 set box_image_path = regexp_replace(box_image_url, '^.*/object/public/puzzle-images/', '')
 where box_image_path is null and box_image_url like '%/object/public/puzzle-images/%';
 
+-- 3.2 Mapa por grade (colunas × linhas): cantos da arte na foto da caixa e o último escaneamento
+alter table public.puzzles add column if not exists cols integer;
+alter table public.puzzles add column if not exists rows integer;
+alter table public.puzzles add column if not exists width_cm numeric;
+alter table public.puzzles add column if not exists height_cm numeric;
+alter table public.puzzles add column if not exists box_corners jsonb;   -- [[x,y] x4] normalizados: sup.esq, sup.dir, inf.dir, inf.esq
+alter table public.puzzles add column if not exists scan_map text;       -- linha a linha: '1' montada, '0' faltando
+alter table public.puzzles add column if not exists scanned_at timestamp with time zone;
+alter table public.found_pieces add column if not exists cell_index integer;  -- linha × colunas + coluna
+
 create index if not exists puzzles_user_id_idx on public.puzzles (user_id);
 create index if not exists found_pieces_user_id_idx on public.found_pieces (user_id);
 create index if not exists found_pieces_puzzle_id_idx on public.found_pieces (puzzle_id);

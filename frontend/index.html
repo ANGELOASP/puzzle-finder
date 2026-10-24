@@ -89,8 +89,8 @@
     dialog::backdrop { background: rgba(2, 6, 23, 0.8); backdrop-filter: blur(4px); }
     dialog[open] { animation: dialog-in 160ms ease-out; }
     @keyframes dialog-in { from { opacity: 0; transform: translateY(8px); } }
-    #scannerModal { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
-    #scannerModal[open] { animation: none; }
+    #scannerModal, #cornerDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    #scannerModal[open], #cornerDialog[open] { animation: none; }
 
     .toast-enter { animation: toast-in 180ms ease-out; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
@@ -248,7 +248,10 @@
       <div id="puzzleProgressContainer" class="hidden mt-4 pt-4 border-t border-slate-800">
         <div class="flex justify-between items-baseline gap-3 text-sm mb-2">
           <span class="text-slate-300 font-medium truncate" id="puzzleProgressName"></span>
-          <span class="text-emerald-300 font-semibold tabular-nums shrink-0" id="puzzleProgressStats">0 / 1000</span>
+          <span class="flex items-center gap-2 shrink-0">
+            <span class="text-emerald-300 font-semibold tabular-nums" id="puzzleProgressStats">0 / 1000</span>
+            <button type="button" id="btnEditPuzzle" class="h-8 px-2.5 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800">Editar</button>
+          </span>
         </div>
         <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden" role="progressbar" aria-labelledby="puzzleProgressName" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="puzzleProgressTrack">
           <div id="puzzleProgressBar" class="bg-emerald-400 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
@@ -261,62 +264,77 @@
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
         <h2 id="step1Title" class="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2.5">
           <span class="w-7 h-7 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center text-sm font-extrabold">1</span>
-          Marque onde a peça vai
+          <span id="step1Text">Escolha a peça que falta</span>
         </h2>
-        <span class="text-sm text-slate-400">no tabuleiro, na caixa ou nos dois</span>
+        <span id="step1Sub" class="text-sm text-slate-400">no mapa ou tocando na imagem da caixa</span>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- MAPA POR GRADE (quebra-cabeça com colunas × linhas cadastradas) -->
+      <article id="gridCard" class="hidden bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl mb-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-1">
+          <h3 class="font-bold text-base">Mapa do quebra-cabeça</h3>
+          <span id="gridCounts" class="text-sm font-semibold text-slate-300 tabular-nums"></span>
+        </div>
+        <p id="gridHint" class="text-sm text-slate-400 mb-3">Toque na peça que falta ou digite o número dela. Escaneie o tabuleiro para o mapa mostrar o que já está montado.</p>
 
-        <!-- Tabuleiro sendo montado -->
-        <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
-          <div class="flex items-start justify-between gap-3 mb-1">
-            <h3 class="font-bold text-base">Buraco no tabuleiro</h3>
-            <span id="boardCoordBadge" class="hidden shrink-0 items-center gap-1 text-xs font-semibold text-emerald-300 bg-emerald-400/10 px-2 py-1 rounded-full">
-              <svg class="icon w-3.5 h-3.5"><use href="#i-check"/></svg> Marcado
-            </span>
-          </div>
-          <p class="text-sm text-slate-400 mb-3">Fotografe a área montada e toque no buraco. O formato do encaixe ajuda a achar a peça.</p>
+        <div id="gridSetup" class="hidden p-4 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 text-sm text-slate-300">
+          <p class="mb-3">Para criar o mapa, marque os 4 cantos da arte na foto da caixa.</p>
+          <button type="button" id="btnSetCorners" class="h-11 px-4 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm">Marcar cantos da arte</button>
+        </div>
 
-          <!-- Câmera (capture) ou foto já salva no aparelho -->
-          <div id="boardUploadLabel" class="grid grid-cols-2 gap-2">
-            <label class="min-h-[88px] flex flex-col items-center justify-center gap-2 rounded-xl px-3 py-4 cursor-pointer transition bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-emerald-400/60 focus-within:ring-2 focus-within:ring-emerald-400 text-slate-200">
-              <svg class="icon w-6 h-6 text-emerald-400"><use href="#i-camera"/></svg>
-              <span class="text-sm font-semibold">Tirar foto</span>
-              <input type="file" id="boardInput" accept="image/*" capture="environment" class="sr-only">
-            </label>
-            <label class="min-h-[88px] flex flex-col items-center justify-center gap-2 rounded-xl px-3 py-4 cursor-pointer transition bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-emerald-400/60 focus-within:ring-2 focus-within:ring-emerald-400 text-slate-200">
-              <svg class="icon w-6 h-6 text-emerald-400"><use href="#i-image"/></svg>
-              <span class="text-sm font-semibold">Da galeria</span>
-              <input type="file" id="boardInputGallery" accept="image/*" class="sr-only">
-            </label>
-          </div>
-
-          <!-- Viewport Interativo com Zoom e Pan do Tabuleiro -->
-          <div id="boardContainer" class="hidden mt-3 w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
-            <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
-              <div class="flex items-center gap-1">
-                <button id="btnBoardZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
-                <button id="btnBoardZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
-                <button id="btnBoardZoomReset" type="button" aria-label="Enquadrar foto inteira" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
-                <span id="boardZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
-              </div>
-              <label class="h-10 px-3 flex items-center gap-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800 cursor-pointer focus-within:ring-2 focus-within:ring-emerald-400">
-                <svg class="icon w-4 h-4"><use href="#i-image"/></svg> Trocar foto
-                <!-- Sem capture: o celular oferece câmera ou galeria -->
-                <input type="file" id="boardInputReplace" accept="image/*" class="sr-only">
-              </label>
+        <div id="mapContainer" class="hidden w-full rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-slate-800">
+            <div class="flex items-center gap-1">
+              <button id="btnMapZoomIn" type="button" aria-label="Ampliar" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+              <button id="btnMapZoomOut" type="button" aria-label="Reduzir" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+              <button id="btnMapZoomReset" type="button" aria-label="Enquadrar o mapa inteiro" class="w-10 h-10 flex items-center justify-center rounded-lg text-slate-200 hover:bg-slate-800 active:scale-95"><svg class="icon"><use href="#i-reset"/></svg></button>
+              <span id="mapZoomBadge" class="text-xs text-slate-400 tabular-nums ml-1">100%</span>
             </div>
-
-            <div id="boardViewport" class="viewport-surface relative w-full h-72 md:h-80 overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
-              <div id="boardTransformLayer" class="relative inline-block origin-top-left">
-                <img id="boardPreview" alt="Foto do tabuleiro montado" class="block max-w-full max-h-72 md:max-h-80 object-contain pointer-events-none">
-                <div id="boardPin" class="pin hidden"></div>
-              </div>
-            </div>
-            <p id="boardHint" class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Toque no buraco. Arraste para mover, use a roda do mouse ou os botões para ampliar.</p>
+            <button type="button" id="btnEditCorners" class="h-10 px-3 rounded-lg text-xs font-semibold text-slate-300 hover:bg-slate-800">Ajustar cantos</button>
           </div>
-        </article>
+          <div id="mapViewport" class="viewport-surface relative w-full h-72 md:h-96 overflow-hidden cursor-crosshair touch-none flex items-center justify-center">
+            <div id="mapTransformLayer" class="relative inline-block origin-top-left">
+              <img id="mapImage" alt="Mapa da arte com a grade de peças" class="block max-w-full max-h-72 md:max-h-96 object-contain pointer-events-none">
+              <div id="mapPin" class="pin hidden"></div>
+            </div>
+          </div>
+          <p class="px-3 py-2 text-xs text-slate-400 border-t border-slate-800">Peças claras ainda faltam; escurecidas já estão montadas. Amplie para tocar com precisão.</p>
+        </div>
+
+        <div class="mt-3 flex flex-wrap items-end gap-3">
+          <div>
+            <label for="cellNumber" class="text-xs font-medium text-slate-400 block mb-1.5">Peça nº</label>
+            <input type="number" id="cellNumber" min="1" step="1" inputmode="numeric" placeholder="ex.: 1024" class="w-36 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
+          </div>
+          <p id="cellInfo" class="h-11 flex items-center text-sm text-slate-300">Nenhuma peça escolhida</p>
+          <button type="button" id="btnToggleCell" class="hidden h-11 px-3 rounded-xl text-sm font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700"></button>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-slate-800">
+          <p class="text-sm font-semibold mb-2">Escanear o tabuleiro</p>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-camera"/></svg> Tirar foto
+              <input type="file" id="scanInput" accept="image/*" capture="environment" class="sr-only">
+            </label>
+            <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200">
+              <svg class="icon w-[18px] h-[18px]"><use href="#i-image"/></svg> Da galeria
+              <input type="file" id="scanInputGallery" accept="image/*" class="sr-only">
+            </label>
+          </div>
+          <p class="text-xs text-slate-500 mt-2">Foto de cima, com os 4 cantos do quebra-cabeça visíveis. Depois você marca os cantos e toca numa área vazia.</p>
+          <div id="scanLoading" class="hidden mt-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+            <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
+            <span class="text-sm text-slate-200" id="scanLoadingText">Analisando o tabuleiro…</span>
+          </div>
+          <details id="scanDetails" class="hidden mt-3">
+            <summary class="cursor-pointer text-sm font-semibold text-slate-300 hover:text-white h-10 flex items-center">Ver a análise do tabuleiro</summary>
+            <img id="scanOverlay" alt="Tabuleiro analisado: vermelho = faltando" class="mt-2 w-full rounded-xl ring-1 ring-inset ring-slate-800">
+          </details>
+        </div>
+      </article>
+
+      <div id="legacyTarget" class="grid grid-cols-1 gap-4 max-w-2xl">
 
         <!-- Imagem da caixa -->
         <article class="bg-slate-900 ring-1 ring-inset ring-slate-800 p-4 rounded-2xl flex flex-col">
@@ -457,6 +475,9 @@
             </div>
           </div>
 
+          <!-- Candidatos (mapa por grade): numerados como na foto -->
+          <ol id="candidateList" class="hidden space-y-2" aria-label="Peças candidatas"></ol>
+
           <!-- Diagnóstico de Formato do Buraco -->
           <div id="slotRoiContainer" class="hidden p-4 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-4">
             <img id="slotRoiImg" alt="Contorno do buraco detectado no tabuleiro" class="w-24 h-24 object-contain rounded-lg bg-black">
@@ -592,13 +613,22 @@
           <label for="newPuzzleName" class="text-xs font-medium text-slate-400 block mb-1.5">Nome</label>
           <input type="text" id="newPuzzleName" required maxlength="80" placeholder="Ex.: Castelo Medieval" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl">
         </div>
+        <fieldset>
+          <legend class="text-xs font-medium text-slate-400 mb-1.5">Grade (vem escrita na caixa)</legend>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block"><span class="text-xs text-slate-500">Colunas</span>
+              <input type="number" id="newPuzzleCols" required min="2" max="200" step="1" placeholder="54" inputmode="numeric" class="mt-1 w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl"></label>
+            <label class="block"><span class="text-xs text-slate-500">Linhas</span>
+              <input type="number" id="newPuzzleRows" required min="2" max="200" step="1" placeholder="37" inputmode="numeric" class="mt-1 w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl"></label>
+            <label class="block"><span class="text-xs text-slate-500">Largura (cm)</span>
+              <input type="number" id="newPuzzleWidth" min="1" max="1000" step="0.1" placeholder="97,8" inputmode="decimal" class="mt-1 w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl"></label>
+            <label class="block"><span class="text-xs text-slate-500">Altura (cm)</span>
+              <input type="number" id="newPuzzleHeight" min="1" max="1000" step="0.1" placeholder="70,4" inputmode="decimal" class="mt-1 w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl"></label>
+          </div>
+          <p id="newPuzzleTotalText" class="text-xs text-slate-500 mt-1.5">Colunas × linhas = total de peças. As medidas deixam o mapa mais preciso.</p>
+        </fieldset>
         <div>
-          <label for="newPuzzleTotal" class="text-xs font-medium text-slate-400 block mb-1.5">Total de peças</label>
-          <input type="number" id="newPuzzleTotal" required min="2" max="40000" step="1" value="1000" inputmode="numeric" class="w-full h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl">
-          <p class="text-xs text-slate-500 mt-1.5">Usado para estimar o tamanho de cada peça na imagem da caixa.</p>
-        </div>
-        <div>
-          <label for="newPuzzleBoxFile" class="text-xs font-medium text-slate-400 block mb-1.5">Foto da imagem da caixa</label>
+          <label for="newPuzzleBoxFile" class="text-xs font-medium text-slate-400 block mb-1.5" id="newPuzzleBoxLabel">Foto da arte (caixa ou pôster), de frente e bem nítida</label>
           <input type="file" id="newPuzzleBoxFile" required accept="image/*" class="w-full text-sm text-slate-400 file:mr-3 file:h-10 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-800 file:text-slate-100 hover:file:bg-slate-700">
         </div>
       </div>
@@ -609,6 +639,28 @@
     </form>
   </dialog>
 
+  <!-- Editor de cantos: marca a arte (caixa) ou o tabuleiro para endireitar a perspectiva -->
+  <dialog id="cornerDialog" aria-labelledby="cornerTitle" class="bg-black text-slate-100 p-0">
+    <div class="h-full flex flex-col p-3 md:p-5 gap-3" style="padding-top: max(0.75rem, env(safe-area-inset-top)); padding-bottom: max(0.75rem, env(safe-area-inset-bottom));">
+      <div>
+        <h2 id="cornerTitle" class="text-base md:text-lg font-bold">Marque os 4 cantos</h2>
+        <p id="cornerHint" class="text-sm text-slate-300 mt-0.5"></p>
+      </div>
+      <div id="cornerStage" class="relative flex-1 min-h-0 rounded-2xl overflow-hidden bg-slate-950">
+        <canvas id="cornerCanvas" class="absolute inset-0 touch-none"></canvas>
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="button" id="btnCornerCancel" class="h-12 px-4 rounded-xl text-sm font-semibold text-slate-300 hover:bg-slate-800">Cancelar</button>
+        <button type="button" id="btnCornerRotate" class="h-12 px-4 flex items-center gap-2 rounded-xl text-sm font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700">
+          <svg class="icon w-[18px] h-[18px]"><use href="#i-rotate"/></svg> Girar
+        </button>
+        <button type="button" id="btnCornerSkipMat" class="hidden h-12 px-4 rounded-xl text-sm font-semibold text-slate-300 hover:bg-slate-800">Pular</button>
+        <button type="button" id="btnCornerOk" class="flex-1 h-12 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm">Confirmar</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="grid.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
