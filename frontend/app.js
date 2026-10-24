@@ -492,6 +492,15 @@ function updateTotalText() {
 newPuzzleCols.addEventListener('input', updateTotalText);
 newPuzzleRows.addEventListener('input', updateTotalText);
 
+// Foto da caixa: avisa já na escolha se a câmera atrapalha (lente, luz, formato)
+newPuzzleBoxFile.addEventListener('change', async () => {
+  const file = newPuzzleBoxFile.files[0];
+  if (!file) return;
+  const exif = await Camera.readExif(file);
+  Camera.learnFrom(exif);
+  Camera.warn(Camera.check(exif, 'box'), 'Foto da caixa');
+});
+
 btnNewPuzzle.addEventListener('click', () => openPuzzleForm(null));
 btnEditPuzzle.addEventListener('click', () => { if (currentPuzzle) openPuzzleForm(currentPuzzle); });
 btnCloseNewPuzzleModal.addEventListener('click', () => newPuzzleModal.close());
@@ -1119,15 +1128,22 @@ for (const input of [tableInput, tableInputGallery]) {
     if (files.length > room) {
       notify(room > 0 ? `Dá para anexar até ${MAX_TABLE_PHOTOS} fotos: entraram só as ${room} primeiras.` : `Já são ${MAX_TABLE_PHOTOS} fotos. Remova alguma para anexar outra.`, 'info');
     }
+    const warnings = [];
     for (const file of files.slice(0, Math.max(0, room))) {
       try {
+        // EXIF antes de comprimir: a compressão descarta as informações da câmera
+        const exif = await Camera.readExif(file);
+        Camera.learnFrom(exif);
+        const issues = Camera.check(exif, 'pieces');
         const blob = await compressImage(file, TABLE_MAX_SIDE, 0.9);
-        tablePhotos.push({ blob, url: URL.createObjectURL(blob) });
+        tablePhotos.push({ blob, url: URL.createObjectURL(blob), issues });
+        warnings.push(...issues);
       } catch (err) {
         notify(err.message, 'error');
       }
     }
     renderTablePhotos();
+    Camera.warn(warnings, 'Fotos das peças');
   });
 }
 
@@ -1159,6 +1175,13 @@ function renderTablePhotos() {
       renderTablePhotos();
     });
     li.append(img, tag, del);
+    if (photo.issues && photo.issues.length) {
+      const w = document.createElement('span');
+      w.className = 'photo-warn';
+      w.textContent = photo.issues.map((x) => x.short).join(' · ');
+      w.title = photo.issues.map((x) => x.text).join(' ');
+      li.appendChild(w);
+    }
     tablePhotosList.appendChild(li);
   });
   const n = tablePhotos.length;
@@ -1705,6 +1728,9 @@ for (const input of [scanInput, scanInputGallery]) {
       return;
     }
     const p = currentPuzzle;
+    const exif = await Camera.readExif(file);
+    Camera.learnFrom(exif);
+    Camera.warn(Camera.check(exif, 'board'), 'Foto do tabuleiro');
     let img;
     try {
       img = await Grid.loadBitmap(file, 3000);
@@ -1864,8 +1890,10 @@ async function startScannerCamera() {
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: currentFacingMode },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
+        // No mapa a análise usa quadros de até 1920 px; foco contínuo quando o celular deixa escolher
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        advanced: [{ focusMode: 'continuous' }],
       },
       audio: false
     });
