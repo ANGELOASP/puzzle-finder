@@ -20,6 +20,7 @@ const Workspace = (() => {
     rejected: new Set(),  // "id:col,row" recusados na comparação
     placedPieces: new Set(),
     cmp: null,            // comparação aberta
+    photoZoom: false,     // "ver na foto": foto inteira (padrão) ou de perto
     bitmaps: new Map(),   // foto das peças → ImageBitmap (para o recorte "ver na foto")
     opened: null,         // passo do assistente aberto
   };
@@ -288,6 +289,12 @@ const Workspace = (() => {
         img.src = `data:image/jpeg;base64,${piece.thumb_base64}`;
         if (cand) img.style.transform = `rotate(${cand.rotation_deg}deg)`;
         b.appendChild(img);
+        if (state.located.photos && state.located.photos.length > 1) {
+          const ph = document.createElement('span');
+          ph.className = 'tile-photo';
+          ph.textContent = `F${piece.photo + 1}`;
+          b.appendChild(ph);
+        }
         if (n) {
           const tag = document.createElement('span');
           tag.className = 'tile-tag';
@@ -369,12 +376,18 @@ const Workspace = (() => {
   function calibAdd(sig, cell, rotation) {
     if (!sig || !currentPuzzle) return;
     const list = calibLoad().filter((p) => !(p.col === cell.col && p.row === cell.row));
-    list.push({ sig, col: cell.col, row: cell.row, rotation });
+    // Cada câmera reproduz as cores de um jeito: o par guarda de qual celular veio a foto
+    list.push({ sig, col: cell.col, row: cell.row, rotation, camera: Camera.modelKey() });
     calibSave(list);
   }
 
+  // Pares deste quebra-cabeça tirados com o celular atual (ou de antes de o modelo ser conhecido)
   function calibPayload() {
-    return currentPuzzle && isGridPuzzle(currentPuzzle) ? calibLoad() : [];
+    if (!currentPuzzle || !isGridPuzzle(currentPuzzle)) return [];
+    const cam = Camera.modelKey();
+    return calibLoad()
+      .filter((p) => !cam || !p.camera || p.camera === cam)
+      .map(({ sig, col, row, rotation }) => ({ sig, col, row, rotation }));
   }
 
   function renderCalib() {
@@ -400,6 +413,7 @@ const Workspace = (() => {
       return;
     }
     state.cmp = { kind: 'find', cell, items: data.candidates, index: 0, confident: data.confident, hole: data.hole, photos: data.photos };
+    state.photoZoom = false;
     renderCompare();
     dlg.showModal();
   }
@@ -412,6 +426,7 @@ const Workspace = (() => {
       return;
     }
     state.cmp = { kind: 'locate', piece, items, index: 0 };
+    state.photoZoom = false;
     renderCompare();
     renderMarks();
     dlg.showModal();
@@ -473,6 +488,8 @@ const Workspace = (() => {
     $('cmpPager').textContent = `${c.index + 1} de ${c.items.length}`;
     $('cmpPrev').disabled = c.index === 0;
     $('cmpNext').disabled = c.index >= c.items.length - 1;
+    const photoNo = (c.kind === 'find' ? item.photo : c.piece.photo) + 1;
+    $('cmpPhotoSummary').textContent = tablePhotos.length > 1 ? `Está na foto ${photoNo}: ver onde` : 'Ver onde ela está na foto';
     const wrap = $('cmpPhotoWrap');
     if (wrap.open) drawPhoto();
   }
@@ -502,9 +519,10 @@ const Workspace = (() => {
     ctx.strokeRect(rx, ry, cw * k, ch * k);
   }
 
-  // Recorte da foto das peças em volta da candidata, circulada
+  // Foto das peças com a candidata circulada: inteira (para saber em qual folha está) ou de perto
   async function drawPhoto() {
     const c = state.cmp;
+    if (!c) return;
     const item = c.items[c.index];
     const photoIdx = c.kind === 'find' ? item.photo : c.piece.photo;
     const bbox = c.kind === 'find' ? item.bbox : c.piece.bbox;
@@ -516,23 +534,54 @@ const Workspace = (() => {
       bmp = await createImageBitmap(photo.blob);
       state.bitmaps.set(photo.url, bmp);
     }
+    if (state.cmp !== c) return;
     const [x, y, w, h] = bbox;
-    const m = Math.max(w, h) * 1.6;
     const cx = x + w / 2, cy = y + h / 2;
-    const sx = Math.max(0, cx - m), sy = Math.max(0, cy - m * 0.6);
-    const sw = Math.min(bmp.width - sx, 2 * m), sh = Math.min(bmp.height - sy, 1.2 * m);
+    let sx = 0, sy = 0, sw = bmp.width, sh = bmp.height;
+    if (state.photoZoom) {
+      const m = Math.max(w, h) * 1.6;
+      sx = Math.max(0, cx - m);
+      sy = Math.max(0, cy - m * 0.6);
+      sw = Math.min(bmp.width - sx, 2 * m);
+      sh = Math.min(bmp.height - sy, 1.2 * m);
+    }
     canvas.width = 720;
     canvas.height = Math.round((720 * sh) / sw);
     const ctx = canvas.getContext('2d');
     const k = canvas.width / sw;
     ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#34d399';
+    // Círculo com contorno escuro: aparece em folha branca e em mesa escura; nunca menor que um dedo
+    const r = Math.max(Math.max(w, h) * 0.75 * k, 22);
+    const px = (cx - sx) * k, py = (cy - sy) * k;
     ctx.beginPath();
-    ctx.arc((cx - sx) * k, (cy - sy) * k, (Math.max(w, h) * 0.7) * k, 0, Math.PI * 2);
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = 'rgba(2, 6, 23, 0.8)';
     ctx.stroke();
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = '#34d399';
+    ctx.stroke();
+    // Número da foto (= número da folha) em destaque
+    const label = `Foto ${photoIdx + 1}`;
+    ctx.font = 'bold 34px system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(12, 12, tw + 28, 50, 12); else ctx.rect(12, 12, tw + 28, 50);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 26, 38);
+    $('cmpPhotoCap').textContent = state.photoZoom ? `De perto, na foto ${photoIdx + 1}` : `Foto ${photoIdx + 1} inteira: a peça está no círculo verde`;
+    const zb = $('cmpPhotoZoom');
+    zb.textContent = state.photoZoom ? 'Ver a foto inteira' : 'Aproximar';
+    zb.setAttribute('aria-pressed', String(state.photoZoom));
   }
 
+  $('cmpPhotoZoom').addEventListener('click', () => {
+    state.photoZoom = !state.photoZoom;
+    drawPhoto();
+  });
   $('cmpPhotoWrap').addEventListener('toggle', () => { if ($('cmpPhotoWrap').open) drawPhoto(); });
   $('cmpClose').addEventListener('click', () => dlg.close());
   dlg.addEventListener('close', () => {
