@@ -148,6 +148,7 @@
     .tile:hover { box-shadow: inset 0 0 0 1px rgb(148 163 184); }
     .tile:active { transform: scale(.96); }
     .tile img { width: 100%; height: 100%; object-fit: contain; }
+    .tile-photo { position: absolute; right: .2rem; top: .2rem; padding: 0 .3rem; border-radius: .35rem; font-size: .62rem; font-weight: 800; background: rgb(2 6 23 / .8); color: rgb(226 232 240); }
     .tile-tag { position: absolute; left: .2rem; bottom: .2rem; padding: 0 .3rem; border-radius: .35rem; font-size: .66rem; font-weight: 800;
       font-variant-numeric: tabular-nums; background: rgb(2 6 23 / .82); color: rgb(226 232 240); }
     .tile[data-conf="sure"] { box-shadow: inset 0 0 0 2px rgb(52 211 153); }
@@ -158,6 +159,14 @@
     .zone i.on { background: rgb(52 211 153); }
 
     /* Comparar e confirmar */
+    #cameraDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    @media (min-width: 768px) { #cameraDialog { width: 38rem; height: auto; max-height: 90vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
+    .cam-chip { display: inline-flex; align-items: center; gap: .4rem; height: 2rem; padding: 0 .7rem; border-radius: 999px; font-size: .75rem; font-weight: 600;
+      color: rgb(203 213 225); background: rgb(15 23 42); box-shadow: inset 0 0 0 1px rgb(51 65 85); max-width: 55vw; }
+    .cam-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cam-chip:hover { color: #fff; box-shadow: inset 0 0 0 1px rgb(100 116 139); }
+    .photo-warn { position: absolute; left: .25rem; bottom: .25rem; right: .25rem; padding: .1rem .35rem; border-radius: .375rem; font-size: 10px; font-weight: 700;
+      color: rgb(254 243 199); background: rgb(120 53 15 / .85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #compareDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
     @media (min-width: 768px) { #compareDialog { width: 46rem; height: auto; max-height: 92vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
     .cmp-frame { aspect-ratio: 1; border-radius: 1rem; overflow: hidden; background: rgb(15 23 42); display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgb(30 41 59); }
@@ -334,6 +343,9 @@
     <section id="setupWizard" class="hidden mb-6" aria-labelledby="wizardTitle">
       <div class="flex items-baseline justify-between gap-3 mb-2.5">
         <h2 id="wizardTitle" class="text-base font-bold tracking-tight">Preparação</h2>
+        <button type="button" data-open-camera class="cam-chip ml-auto" aria-label="Câmera do celular: dicas e modelo">
+          <svg class="icon w-4 h-4"><use href="#i-camera"/></svg><span data-camera-label>Configurar a câmera</span>
+        </button>
         <span id="wizardProgress" class="text-xs font-semibold text-slate-400 tabular-nums"></span>
       </div>
       <ol class="wz grid gap-2 md:grid-cols-3 md:items-start">
@@ -549,8 +561,10 @@
               <li>Arrume as peças <strong class="text-slate-300">viradas para cima</strong> em fileiras numa folha A4 branca, <strong class="text-slate-300">sem uma encostar na outra</strong>.</li>
               <li>Fotografe <strong class="text-slate-300">bem de cima</strong>, enquadrando a folha (ela pode ocupar a foto toda) e sem reflexo de lâmpada.</li>
               <li>Encheu a folha? Troque as peças e tire outra foto: dá para anexar <span id="tablePhotosMax">8</span>.</li>
+              <li><strong class="text-slate-300">Numere as folhas</strong> (1, 2, 3…) na ordem das fotos: o app diz em qual foto está cada peça, e o número é o mesmo da folha.</li>
             </ol>
             <p class="mt-1.5 text-xs text-slate-500">O branco da folha corrige a cor da luz. Se a folha inteira aparecer, com a mesa em volta, ela também serve de régua.</p>
+            <button type="button" data-open-camera class="mt-2 h-8 text-xs font-semibold text-emerald-300 hover:text-emerald-200 underline underline-offset-2">Como configurar a câmera do celular</button>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200 transition">
@@ -729,6 +743,10 @@
           <span class="text-slate-300">Banco de dados</span>
           <span id="supabaseStatusLabel" class="flex items-center gap-2 font-medium text-slate-400"><span class="w-2 h-2 rounded-full bg-slate-500"></span>Verificando…</span>
         </div>
+        <button type="button" data-open-camera class="w-full flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 hover:ring-slate-600 text-left">
+          <span class="text-slate-300">Câmera do celular</span>
+          <span class="flex items-center gap-1.5 font-medium text-emerald-300"><span data-camera-label>Configurar a câmera</span><svg class="icon w-4 h-4"><use href="#i-right"/></svg></span>
+        </button>
       </div>
 
       <details class="group">
@@ -801,6 +819,41 @@
 
   <!-- Editor de cantos: marca a arte (caixa) ou o tabuleiro para endireitar a perspectiva -->
   <!-- Comparar e confirmar: arte da caixa × peça da foto, já girada -->
+  <dialog id="cameraDialog" aria-labelledby="cameraTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col max-h-full">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="flex-1 min-w-0">
+          <p class="text-[11px] font-semibold tracking-[0.12em] uppercase text-slate-400">Câmera do celular</p>
+          <h2 id="cameraTitle" class="text-xl font-bold tracking-tight">Fotos melhores, análise melhor</h2>
+        </div>
+        <button type="button" id="btnCameraClose" class="w-10 h-10 shrink-0 rounded-full bg-slate-900 hover:bg-slate-800 flex items-center justify-center" aria-label="Fechar">
+          <svg class="icon w-5 h-5"><use href="#i-x"/></svg>
+        </button>
+      </header>
+      <div class="overflow-y-auto px-4 py-4 flex flex-col gap-5">
+        <form id="cameraForm" class="flex flex-col gap-2">
+          <label for="cameraModel" class="text-xs font-medium text-slate-400">Modelo do celular</label>
+          <div class="flex gap-2">
+            <input id="cameraModel" list="cameraModels" autocomplete="off" spellcheck="false" placeholder="ex.: Galaxy S24 FE, iPhone 13, Redmi Note 13"
+              class="flex-1 min-w-0 h-11 bg-slate-900 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-sm px-3 rounded-xl">
+            <button type="submit" class="btn-primary shrink-0">Salvar</button>
+          </div>
+          <datalist id="cameraModels">
+            <option value="Galaxy S24 FE"><option value="Galaxy S24"><option value="Galaxy S23"><option value="Galaxy S23 FE">
+            <option value="Galaxy A55"><option value="Galaxy A54"><option value="Galaxy A35"><option value="Galaxy A34"><option value="Galaxy A15"><option value="Galaxy A05s">
+            <option value="iPhone 15"><option value="iPhone 15 Pro"><option value="iPhone 14"><option value="iPhone 13"><option value="iPhone 12"><option value="iPhone 11">
+            <option value="Redmi Note 13"><option value="Redmi Note 12"><option value="POCO X6"><option value="Xiaomi 14">
+            <option value="Moto G84"><option value="Moto G54"><option value="Moto G34"><option value="Motorola Edge 40">
+            <option value="Pixel 8"><option value="Pixel 7a">
+          </datalist>
+          <p id="cameraSource" class="text-xs text-slate-400"></p>
+          <p class="text-xs text-slate-500">Com o modelo, o app mostra os menus da sua marca, avisa quando uma foto sai com a lente, a luz ou o formato que atrapalham, e aprende as cores separadamente para cada celular.</p>
+        </form>
+        <div id="cameraGuide" class="flex flex-col gap-5"></div>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="compareDialog" aria-labelledby="cmpTitle" class="bg-slate-950 text-slate-100 p-0">
     <div class="flex flex-col h-full max-h-[100dvh] md:max-h-[92vh]">
       <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
@@ -836,8 +889,12 @@
           <button type="button" id="cmpNext" class="btn-quiet">Próxima<svg class="icon w-4 h-4"><use href="#i-right"/></svg></button>
         </div>
         <details id="cmpPhotoWrap" class="rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800">
-          <summary class="cursor-pointer h-11 px-3 flex items-center text-sm font-semibold text-slate-300">Ver onde ela está na foto</summary>
-          <canvas id="cmpPhoto" class="block w-full rounded-b-xl" aria-label="Recorte da foto das peças com a candidata circulada"></canvas>
+          <summary class="cursor-pointer h-11 px-3 flex items-center text-sm font-semibold text-slate-300"><span id="cmpPhotoSummary">Ver onde ela está na foto</span></summary>
+          <canvas id="cmpPhoto" class="block w-full" aria-label="Foto das peças com a candidata circulada"></canvas>
+          <div class="flex items-center justify-between gap-3 px-3 py-2">
+            <span id="cmpPhotoCap" class="text-xs text-slate-400"></span>
+            <button type="button" id="cmpPhotoZoom" class="btn-quiet h-9 px-3 text-xs" aria-pressed="false">Aproximar</button>
+          </div>
         </details>
       </div>
       <footer class="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-slate-800 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2">
@@ -869,6 +926,7 @@
 
   <script src="grid.js"></script>
   <script src="app.js"></script>
+  <script src="camera.js"></script>
   <script src="workspace.js"></script>
 </body>
 </html>
