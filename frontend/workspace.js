@@ -143,20 +143,35 @@ const Workspace = (() => {
       ? `Separando as peças de ${tablePhotos.length === 1 ? '1 foto' : `${tablePhotos.length} fotos`} e comparando com a caixa…`
       : 'Acordando o servidor… a primeira busca do dia pode levar até 1 minuto.';
     try {
-      const form = new FormData();
-      appendTablePhotos(form, tablePhotos.map((t) => t.blob));
-      form.append('box_file', grid.artBlob, 'art.jpg');
-      form.append('cols', p.cols);
-      form.append('rows', p.rows);
-      form.append('top_k', '5');
-      if (grid.scanMap) form.append('scan_map', grid.scanMap);
+      const blobs = tablePhotos.map((t) => t.blob);
       const calib = calibPayload();
-      if (calib.length) form.append('calib', JSON.stringify(calib));
-      if (p.width_cm > 0) form.append('piece_mm', String((p.width_cm * 10) / p.cols));
+      const buildForm = (chunk) => {
+        const form = new FormData();
+        appendTablePhotos(form, chunk);
+        form.append('box_file', grid.artBlob, 'art.jpg');
+        form.append('cols', p.cols);
+        form.append('rows', p.rows);
+        form.append('top_k', '5');
+        if (grid.scanMap) form.append('scan_map', grid.scanMap);
+        if (calib.length) form.append('calib', JSON.stringify(calib));
+        if (p.width_cm > 0) form.append('piece_mm', String((p.width_cm * 10) / p.cols));
+        return form;
+      };
       if (apiWakeup) await apiWakeup;
-      const res = await fetchWithTimeout(`${getApiUrl()}/api/locate-pieces`, { method: 'POST', headers: await authHeaders(), body: form }, 240000);
-      if (!res.ok) throw new Error(await apiErrorMessage(res, 'Não foi possível localizar as peças.'));
-      state.located = await res.json();
+      const parts = await postPhotosInBatches('/api/locate-pieces', blobs, buildForm, {
+        timeoutMs: 240000,
+        errorText: 'Não foi possível localizar as peças.',
+        onBatch: (from, to, total) => {
+          if (total > PHOTOS_PER_REQUEST) $('locateLoadingText').textContent = `Separando as peças das fotos ${from + 1}–${to} de ${total} e comparando com a caixa…`;
+        },
+      });
+      // Junta os lotes: id e número da foto passam a valer para a sessão inteira
+      state.located = {
+        ...parts[0].data,
+        pieces: parts.flatMap(({ offset, data }) => data.pieces.map((pc) => ({ ...pc, id: `${offset}-${pc.id}`, photo: pc.photo + offset }))),
+        pieces_detected: parts.reduce((n, x) => n + (x.data.pieces_detected || 0), 0),
+        photos: mergedPhotos(parts, blobs.length),
+      };
       state.locatedFor = photosSignature();
       state.rejected.clear();
       state.placedPieces.clear();

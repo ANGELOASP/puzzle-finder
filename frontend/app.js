@@ -1035,7 +1035,82 @@ let boxBlob = null;
 // Fotos das peças (uma folha A4 por foto): [{ blob, url }]
 const tablePhotos = [];
 // Mesmo limite do servidor
-const MAX_TABLE_PHOTOS = 8;
+// Fotos das peças por sessão. O servidor analisa até PHOTOS_PER_REQUEST por vez (memória do plano
+// gratuito): o app manda em lotes e junta os resultados
+const MAX_TABLE_PHOTOS = 40;
+const PHOTOS_PER_REQUEST = 6;
+document.getElementById('tablePhotosMax').textContent = String(MAX_TABLE_PHOTOS);
+
+// Envia as fotos em lotes, um depois do outro. Devolve [{ offset, data }] dos lotes que deram certo;
+// lote sem peça aproveitável (404) é pulado, os outros erros param tudo.
+async function postPhotosInBatches(path, blobs, buildForm, { timeoutMs = 120000, onBatch, errorText } = {}) {
+  const parts = [];
+  let skipped = 0, lastError = null;
+  for (let start = 0; start < blobs.length; start += PHOTOS_PER_REQUEST) {
+    const chunk = blobs.slice(start, start + PHOTOS_PER_REQUEST);
+    if (onBatch) onBatch(start, start + chunk.length, blobs.length);
+    const res = await fetchWithTimeout(`${getApiUrl()}${path}`, {
+      method: 'POST', headers: await authHeaders(), body: await buildForm(chunk),
+    }, timeoutMs);
+    if (res.status === 404 && blobs.length > PHOTOS_PER_REQUEST) {
+      skipped += chunk.length;
+      lastError = new Error(await apiErrorMessage(res, errorText));
+      continue;
+    }
+    if (!res.ok) throw new Error(await apiErrorMessage(res, errorText));
+    parts.push({ offset: start, size: chunk.length, data: await res.json() });
+  }
+  if (!parts.length) throw lastError || new Error(errorText);
+  if (skipped) notify(`${skipped} ${skipped === 1 ? 'foto não teve' : 'fotos não tiveram'} peças aproveitáveis e ${skipped === 1 ? 'ficou' : 'ficaram'} de fora.`, 'info', 6000);
+  return parts;
+}
+
+// Resumo das fotos na posição certa (lote que falhou deixa buracos vazios)
+function mergedPhotos(parts, total) {
+  const photos = new Array(total).fill(null);
+  for (const { offset, data } of parts) (data.photos || []).forEach((ph, i) => { photos[offset + i] = ph; });
+  return photos;
+}
+
+const shiftPhoto = (offset) => (x) => ({ ...x, photo: (x.photo || 0) + offset });
+
+// Buraco → peça em vários lotes: junta as candidatas e refaz a confiança na lista geral
+function mergeFindCell(parts, total) {
+  if (parts.length === 1 && parts[0].offset === 0) return parts[0].data;
+  const cands = [];
+  for (const { offset, data } of parts) {
+    data.candidates.forEach((c, i) => cands.push({ ...shiftPhoto(offset)(c), batchConfident: i === 0 && data.confident }));
+  }
+  cands.sort((a, b) => b.score - a.score);
+  const top = cands.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
+  // Mesmo critério do servidor (margem de 12 pontos sobre a 2ª), agora contra as candidatas de todos os lotes
+  const confident = Boolean(top[0] && top[0].batchConfident && (top.length < 2 || top[0].score - top[1].score >= 12));
+  const first = parts[0].data;
+  return {
+    ...first,
+    candidates: top,
+    confident,
+    pieces_detected: parts.reduce((n, p) => n + (p.data.pieces_detected || 0), 0),
+    photos: mergedPhotos(parts, total),
+    annotated_tables: parts.flatMap(({ offset, data }) => (data.annotated_tables || []).map(shiftPhoto(offset))),
+  };
+}
+
+// Modo sem mapa em vários lotes: fica o lote com a peça mais parecida
+function mergeFindPiece(parts, total) {
+  if (parts.length === 1 && parts[0].offset === 0) return parts[0].data;
+  const best = parts.reduce((a, b) => ((b.data.score || 0) > (a.data.score || 0) ? b : a));
+  const d = best.data;
+  const images = d.annotated_tables || [{ photo: d.photo || 0, image_base64: d.annotated_table_base64 }];
+  return {
+    ...d,
+    photo: (d.photo || 0) + best.offset,
+    annotated_tables: images.map(shiftPhoto(best.offset)),
+    candidates: (d.candidates || []).map(shiftPhoto(best.offset)),
+    pieces_detected: parts.reduce((n, p) => n + (p.data.pieces_detected || 0), 0),
+    photos: mergedPhotos(parts, total),
+  };
+}
 let lastFoundResult = null;
 
 async function compressImage(file, maxDimension = 1600, quality = 0.85) {
@@ -1376,17 +1451,18 @@ btnFind.addEventListener('click', async () => {
   try {
     if (apiWakeup) await apiWakeup;
     const byCell = gridActive();
-    const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
-      method: 'POST',
-      headers: await authHeaders(),
-      body: byCell ? await buildFindCellForm(tablePhotos.map(p => p.blob)) : buildFindPieceForm(tablePhotos.map(p => p.blob))
-    }, 120000);
-
-    if (!res.ok) {
-      throw new Error(await apiErrorMessage(res, 'Não foi possível encontrar a peça correspondente.'));
-    }
-
-    const data = await res.json();
+    const blobs = tablePhotos.map(p => p.blob);
+    const parts = await postPhotosInBatches(`/api/${byCell ? 'find-cell' : 'find-piece'}`, blobs,
+      // No mapa a tela de comparação não usa as fotos anotadas: sem elas a resposta fica bem menor
+      (chunk) => (byCell ? buildFindCellForm(chunk, { annotate: false }) : buildFindPieceForm(chunk)), {
+        errorText: 'Não foi possível encontrar a peça correspondente.',
+        onBatch: (from, to, total) => {
+          if (total <= PHOTOS_PER_REQUEST) return;
+          loadingText.textContent = `Analisando as fotos ${from + 1}–${to} de ${total}…`;
+          loadingSubtext.textContent = `São ${Math.ceil(total / PHOTOS_PER_REQUEST)} lotes de até ${PHOTOS_PER_REQUEST} fotos.`;
+        },
+      });
+    const data = byCell ? mergeFindCell(parts, blobs.length) : mergeFindPiece(parts, blobs.length);
     setServiceStatus('api', 'ok', 'Online');
     hide(apiNotice, 'flex');
 
