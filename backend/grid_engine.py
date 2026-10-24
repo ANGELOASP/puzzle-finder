@@ -12,13 +12,24 @@ import numpy as np
 from puzzle_engine import ROTATIONS, _rotate
 
 # Tamanho (px) da célula usado no escaneamento: pequeno basta e deixa 2000 células rápidas
-SCAN_CELL = 32
-# Miolo da célula comparado no escaneamento: fica longe das abas/encaixes das vizinhas
-SCAN_INSET = 0.3
+SCAN_CELL = 24
+# Margem da célula ignorada no escaneamento (abas/encaixes das vizinhas)
+SCAN_INSET = 0.2
 # Deslocamentos (fração da célula) testados para tolerar cantos marcados com pouca precisão
 SCAN_OFFSETS = (-0.15, 0.0, 0.15)
 # Célula com confiança abaixo disso adota a maioria das vizinhas
 SCAN_SMOOTH_BELOW = 0.25
+SCAN_KEEP_ISOLATED = 0.95
+# Sementes do auto-treino: desenho que bate com a arte (montada) e vazio contínuo ao toque (fundo)
+ART_SEED_NCC = 0.75
+ART_SEED_MIN_TEXTURE = 6.0
+MAT_SEED_MAX_NCC = 0.55
+MAT_FLOOD_STEP = 12.0      # diferença de cor máxima entre duas células vazias vizinhas
+MAT_FLOOD_FROM_TAP = 50.0  # ... e em relação ao ponto tocado
+# Sem sementes suficientes, decisão fixa (logit): cor mais perto da arte que do fundo + correlação
+COLOR_WEIGHT = 2.0
+NCC_WEIGHT = 4.0
+NCC_NEUTRAL = 0.45
 
 # Tamanho (px) da célula na busca da peça
 MATCH_CELL = 64
@@ -50,119 +61,170 @@ def scan_board(box_rect, board_rect, cols, rows, margin, mat_points=None):
     """
     Classifica cada célula do tabuleiro como montada ou vazia.
     `mat_points`: pontos (x, y normalizados no board_rect) que o usuário tocou numa área vazia
-    (feltro/madeira) — a referência mais confiável da cor do fundo.
-    Retorna dict(placed: lista rows×cols de bool, confidence: matriz, mat_found: bool).
+    (feltro/madeira) — a referência mais confiável do fundo.
+    Retorna dict(placed: rows×cols de bool, confidence: matriz 0..1, mat_found: bool).
+
+    Cada foto se calibra sozinha: células cujo DESENHO bate com a arte (correlação, que não liga
+    para luz nem para o tom da foto) e a área vazia contínua ao toque viram exemplos; um
+    classificador linear treinado nesses exemplos decide o resto (arte lisa, madeira de outro tom).
     """
     bh, bw = board_rect.shape[:2]
-    cell_w_in = bw / (cols + 2 * margin)
-    cell_h_in = bh / (rows + 2 * margin)
+    cwi, chi = bw / (cols + 2 * margin), bh / (rows + 2 * margin)
     cw = SCAN_CELL
-    ch = max(8, int(round(SCAN_CELL * cell_h_in / cell_w_in)))
+    ch = max(8, int(round(SCAN_CELL * chi / cwi)))
+    bsize = (int(round((cols + 2 * margin) * cw)), int(round((rows + 2 * margin) * ch)))
+    raw = cv2.resize(board_rect, bsize, interpolation=cv2.INTER_AREA)
+    board = cv2.GaussianBlur(_lab(raw), (0, 0), 1.0)
+    box = cv2.GaussianBlur(_lab(cv2.copyMakeBorder(cv2.resize(box_rect, (cols * cw, rows * ch), interpolation=cv2.INTER_AREA),
+                                                   ch, ch, cw, cw, cv2.BORDER_REPLICATE)), (0, 0), 1.0)
     mpx, mpy = margin * cw, margin * ch
+    iw = 3 * max(1, int(round(cw * (1 - 2 * SCAN_INSET) / 3)))
+    ih = 3 * max(1, int(round(ch * (1 - 2 * SCAN_INSET) / 3)))
+    n_off = len(SCAN_OFFSETS) ** 2
 
-    board = _lab(cv2.resize(board_rect, (int(round((cols + 2 * margin) * cw)), int(round((rows + 2 * margin) * ch))),
-                            interpolation=cv2.INTER_AREA))
-    box = _lab(cv2.resize(box_rect, (cols * cw, rows * ch), interpolation=cv2.INTER_AREA))
+    # 1. Miolo de cada célula no tabuleiro e na arte (com pequenos deslocamentos)
+    bp = np.zeros((rows, cols, ih, iw, 3), np.float32)
+    xp = np.zeros((rows, cols, n_off, ih, iw, 3), np.float32)
+    for r in range(rows):
+        for c in range(cols):
+            x, y = int(mpx + (c + SCAN_INSET) * cw), int(mpy + (r + SCAN_INSET) * ch)
+            bp[r, c] = board[y:y + ih, x:x + iw]
+            k = 0
+            for oy in SCAN_OFFSETS:
+                for ox in SCAN_OFFSETS:
+                    X, Y = int(cw + (c + SCAN_INSET + ox) * cw), int(ch + (r + SCAN_INSET + oy) * ch)
+                    xp[r, c, k] = box[Y:Y + ih, X:X + iw]
+                    k += 1
 
-    # 1. Cor do fundo vazio (feltro/mesa): faixa em volta do quebra-cabeça, ignorando área fora da foto (preta)
-    ring = np.ones(board.shape[:2], bool)
-    ring[int(mpy):int(mpy + rows * ch), int(mpx):int(mpx + cols * cw)] = False
-    ring_px = board[ring]
-    raw_ring = cv2.resize(board_rect, (board.shape[1], board.shape[0]), interpolation=cv2.INTER_AREA)[ring]
-    ring_px = ring_px[raw_ring.max(axis=1) > 12]
-    if mat_points:
-        # Áreas vazias tocadas pelo usuário: amostra de ~1 célula em volta de cada ponto
-        samples = []
-        H, W = board.shape[:2]
-        for (px, py) in mat_points:
-            x, y = int(px * W), int(py * H)
-            patch = board[max(0, y - ch // 2):y + ch // 2 + 1, max(0, x - cw // 2):x + cw // 2 + 1]
-            if patch.size:
-                samples.append(patch.reshape(-1, 3))
-        if samples:
-            ring_px = np.concatenate(samples)
-    mat_found = ring_px.shape[0] > 50
-    mat = np.median(ring_px, axis=0) if mat_found else None
+    # 2. Correlação do desenho (melhor deslocamento) e descritores de cor
+    a = bp - bp.mean((2, 3), keepdims=True)
+    bx = xp - xp.mean((3, 4), keepdims=True)
+    num = (a[:, :, None] * bx).sum((3, 4, 5))
+    den = np.sqrt((a ** 2).sum((2, 3, 4))[:, :, None] * (bx ** 2).sum((3, 4, 5))) + 1e-6
+    ncc_all = num / den
+    best = ncc_all.argmax(-1)
+    ncc = ncc_all.max(-1)
+    b_mean, b_std = bp.mean((2, 3)), bp.std((2, 3)).mean(-1)
+    art_tex = xp[:, :, n_off // 2].std((2, 3)).mean(-1)
+    b_blocks = bp.reshape(rows, cols, 3, ih // 3, 3, iw // 3, 3).mean((3, 5)).reshape(rows, cols, 9, 3)
+    x_blocks = xp.reshape(rows, cols, n_off, 3, ih // 3, 3, iw // 3, 3).mean((4, 6)).reshape(rows, cols, n_off, 9, 3)
+    valid = raw.reshape(-1, 3).max(1).reshape(raw.shape[:2]) > 12
 
     # Luminância pesa menos: a luz da foto do tabuleiro varia mais que a cor
     weights = np.array([0.5, 1.0, 1.0], np.float32)
 
-    def dist(a, b):
-        return np.sqrt((((a - b) * weights) ** 2).sum(-1)).mean(-1)
+    def cdist(u, v):
+        return np.sqrt((((u - v) * weights) ** 2).sum(-1))
 
-    # 2. Descritores 3×3 do miolo de cada célula (tabuleiro) e da arte (com pequenos deslocamentos)
-    iw, ih = cw * (1 - 2 * SCAN_INSET), ch * (1 - 2 * SCAN_INSET)
-    board_desc = np.zeros((rows, cols, 9, 3), np.float32)
-    box_desc = np.zeros((rows, cols, len(SCAN_OFFSETS) ** 2, 9, 3), np.float32)
-    for r in range(rows):
-        for c in range(cols):
-            bx, by = mpx + c * cw + cw * SCAN_INSET, mpy + r * ch + ch * SCAN_INSET
-            board_desc[r, c] = _block_means(board, bx, by, iw, ih)
-            k = 0
-            for oy in SCAN_OFFSETS:
-                for ox in SCAN_OFFSETS:
-                    x0 = np.clip(c * cw + cw * (SCAN_INSET + ox), 0, cols * cw - iw)
-                    y0 = np.clip(r * ch + ch * (SCAN_INSET + oy), 0, rows * ch - ih)
-                    box_desc[r, c, k] = _block_means(box, x0, y0, iw, ih)
-                    k += 1
-
-    if not mat_found:
-        # Foto cortada rente ao quebra-cabeça: aprende a cor do fundo pelas células que MENOS
-        # se parecem com a arte (as vazias), desde que formem um grupo de cor coerente
-        d0 = dist(board_desc[:, :, None], box_desc).min(-1)
-        # Tenta do grupo mais restrito ao mais amplo: com poucas peças faltando, só o topo é vazio
-        for pct in (95, 90, 80, 75):
-            cand = board_desc[d0 >= np.percentile(d0, pct)].reshape(-1, 3)
-            if cand.shape[0] < 20:
-                continue
-            m0 = np.median(cand, axis=0)
-            close = np.linalg.norm((cand - m0) * weights, axis=1)
-            if np.percentile(close, 50) < 18:  # vazio de cor parecida (feltro/madeira), não arte desalinhada
-                ring_px = cand[close < np.percentile(close, 60)]
-                mat = np.median(ring_px, axis=0)
-                mat_found = True
-                break
-
-    if mat_found:
-        d_mat = dist(board_desc, mat[None, None, None, :])
-        mat_spread = max(4.0, float(np.percentile(dist(ring_px[:, None, :], mat[None, None, :]), 90)))
-        placed = d_mat > 2.5 * mat_spread  # chute inicial: tudo que não parece feltro
-    else:
-        d_mat = None
-        placed = np.ones((rows, cols), bool)
-
-    # 3. Ajusta cor/luz da arte para a do tabuleiro (linear por canal) usando as células montadas, e refina
-    gain, bias = np.ones(3, np.float32), np.zeros(3, np.float32)
-    for _ in range(3):
-        if placed.sum() >= 12:
-            src = box_desc[:, :, len(SCAN_OFFSETS) ** 2 // 2][placed].reshape(-1, 3)
-            dst = board_desc[placed].reshape(-1, 3)
-            for chn in range(3):
-                A = np.stack([src[:, chn], np.ones(len(src))], 1)
-                (g, b0), *_ = np.linalg.lstsq(A, dst[:, chn], rcond=None)
-                if 0.3 < g < 3.0:
-                    gain[chn], bias[chn] = g, b0
-        adjusted = box_desc * gain + bias
-        d_art = dist(board_desc[:, :, None], adjusted).min(-1)
-
-        if mat_found:
-            score = d_mat / (d_mat + d_art + 1e-6)          # >0.5: mais parecido com a arte que com o feltro
-            placed = score > 0.5
-            confidence = np.abs(score - 0.5) * 2
+    # 3. Fundo vazio: toque do usuário (inundando as vazias vizinhas de cor parecida) ou faixa em volta
+    mat_seed = np.zeros((rows, cols), bool)
+    mat_ref = []
+    for (px, py) in (mat_points or []):
+        c, r = int(px * (cols + 2 * margin) - margin), int(py * (rows + 2 * margin) - margin)
+        if 0 <= r < rows and 0 <= c < cols:
+            mat_seed[r, c] = True
+            mat_ref.append(b_mean[r, c])
         else:
-            # Sem feltro visível: separa pela distância à arte (Otsu)
-            v = np.clip(d_art / (np.percentile(d_art, 99) + 1e-6) * 255, 0, 255).astype(np.uint8)
-            t, _ = cv2.threshold(v.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            placed = v <= t
-            confidence = np.clip(np.abs(v.astype(np.float32) - t) / 128.0, 0, 1)
+            X, Y = int(px * bsize[0]), int(py * bsize[1])
+            patch = board[max(0, Y - ch // 2):Y + ch // 2 + 1, max(0, X - cw // 2):X + cw // 2 + 1].reshape(-1, 3)
+            if len(patch):
+                mat_ref.append(np.median(patch, 0))
+    if not mat_ref:
+        ring = np.ones(board.shape[:2], bool)
+        ring[int(mpy):int(mpy + rows * ch), int(mpx):int(mpx + cols * cw)] = False
+        ring_px = board[ring & valid]
+        if ring_px.shape[0] > 50:
+            mat_ref.append(np.median(ring_px, 0))
+    if mat_ref:
+        ref = np.array(mat_ref, np.float32)
+        near_ref = cdist(b_mean[:, :, None], ref[None, None]).min(-1) < MAT_FLOOD_FROM_TAP
+        if not mat_seed.any():  # sem toque dentro da grade: começa pelas células mais parecidas com a faixa
+            start = near_ref & (ncc < MAT_SEED_MAX_NCC) & (cdist(b_mean[:, :, None], ref[None, None]).min(-1) < MAT_FLOOD_FROM_TAP / 3)
+            mat_seed |= start
+        mat_seed = _flood(mat_seed, b_mean, near_ref & (ncc < MAT_SEED_MAX_NCC), cdist)
+    else:
+        # Foto cortada rente e sem toque: o vazio é o grupo de cor coerente das células sem desenho da arte
+        low = ncc < np.percentile(ncc, 20)
+        if low.sum() >= 10:
+            m0 = np.median(b_mean[low], 0)
+            mat_seed = low & (cdist(b_mean, m0) < MAT_FLOOD_FROM_TAP / 2)
+    mat_found = bool(mat_seed.sum() >= 5)
 
-    # 4. Células duvidosas seguem a maioria das 8 vizinhas
+    # 4. Montadas certas: o desenho bate com a arte numa célula com textura
+    art_seed = (ncc > ART_SEED_NCC) & (art_tex > ART_SEED_MIN_TEXTURE) & ~mat_seed
+
+    # 5. Tom/luz da arte ajustados ao tabuleiro (linear por canal) só com as montadas certas
+    gain, bias = np.ones(3, np.float32), np.zeros(3, np.float32)
+    if art_seed.sum() >= 12:
+        idx = np.argwhere(art_seed)
+        src = x_blocks[idx[:, 0], idx[:, 1], best[art_seed]].reshape(-1, 3)
+        dst = b_blocks[art_seed].reshape(-1, 3)
+        for chn in range(3):
+            A = np.stack([src[:, chn], np.ones(len(src))], 1)
+            (g, b0), *_ = np.linalg.lstsq(A, dst[:, chn], rcond=None)
+            if 0.3 < g < 3.0:
+                gain[chn], bias[chn] = g, b0
+    d_art = cdist(b_blocks[:, :, None], x_blocks * gain + bias).mean(-1).min(-1)
+    if mat_found:
+        seeds = b_mean[mat_seed]
+        d_mat = np.full((rows, cols), np.inf, np.float32)
+        for i in range(0, len(seeds), 256):  # vizinho mais próximo entre os exemplos de fundo
+            d_mat = np.minimum(d_mat, cdist(b_mean[:, :, None], seeds[None, None, i:i + 256]).min(-1))
+    else:
+        d_mat = np.full((rows, cols), 40.0, np.float32)
+
+    # 6. Classificador treinado nas sementes desta foto
+    feats = np.stack([ncc, np.log1p(d_art), np.log1p(d_mat), np.log1p(b_std),
+                      np.log1p(d_mat) - np.log1p(d_art)], -1).reshape(-1, 5)
+    if mat_seed.sum() >= 5 and art_seed.sum() >= 5:
+        logit = _fit_logit(feats, art_seed.ravel(), mat_seed.ravel()).reshape(rows, cols)
+    else:
+        logit = COLOR_WEIGHT * (np.log1p(d_mat) - np.log1p(d_art)) + NCC_WEIGHT * (ncc - NCC_NEUTRAL)
+    prob = 1 / (1 + np.exp(-logit))
+    prob = np.where(art_seed, np.maximum(prob, 0.9), prob)
+    prob = np.where(mat_seed, np.minimum(prob, 0.1), prob)
+    placed = prob > 0.5
+    confidence = np.abs(prob - 0.5) * 2
+
+    # 7. Células duvidosas seguem a maioria das 8 vizinhas; ilhadas (7+ vizinhas discordam) também,
+    # a não ser que o desenho bata com certeza (peça solta no lugar exato, cercada de vazio, é rara)
     p = placed.astype(np.float32)
     neigh = cv2.filter2D(p, -1, np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], np.float32), borderType=cv2.BORDER_REPLICATE) / 8
     doubtful = confidence < SCAN_SMOOTH_BELOW
-    placed = np.where(doubtful, neigh >= 0.5, placed)
+    isolated = (np.abs(neigh - p) >= 7 / 8) & (confidence < SCAN_KEEP_ISOLATED)
+    placed = np.where(doubtful | isolated, neigh >= 0.5, placed)
 
-    return {"placed": placed, "confidence": confidence, "mat_found": bool(mat_found)}
+    return {"placed": placed, "confidence": confidence, "mat_found": mat_found}
+
+
+def _fit_logit(x, pos, neg, iters=400, l2=0.01):
+    """Regressão logística (classes balanceadas) treinada em `pos`/`neg`; devolve o logit de todos."""
+    mu, sd = x.mean(0), x.std(0) + 1e-6
+    xn = (x - mu) / sd
+    sel = pos | neg
+    xs, ys = xn[sel], pos[sel].astype(np.float32)
+    wts = np.where(ys > 0, 0.5 / ys.mean(), 0.5 / (1 - ys.mean()))
+    w, b = np.zeros(x.shape[1]), 0.0
+    for _ in range(iters):
+        g = (1 / (1 + np.exp(-(xs @ w + b))) - ys) * wts
+        w -= 0.5 * (xs.T @ g / len(ys) + l2 * w)
+        b -= 0.5 * g.mean()
+    return xn @ w + b
+
+
+def _flood(seed, color, allowed, cdist):
+    """Expande `seed` para células vizinhas (4) permitidas cuja cor muda pouco de uma para a outra."""
+    out = seed.copy()
+    rows, cols = seed.shape
+    stack = [tuple(p) for p in np.argwhere(seed)]
+    while stack:
+        r, c = stack.pop()
+        for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+            if 0 <= rr < rows and 0 <= cc < cols and not out[rr, cc] and allowed[rr, cc] \
+                    and cdist(color[rr, cc], color[r, c]) < MAT_FLOOD_STEP:
+                out[rr, cc] = True
+                stack.append((rr, cc))
+    return out
 
 
 def draw_scan(board_rect, cols, rows, margin, placed):
