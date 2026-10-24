@@ -31,6 +31,106 @@ MIN_SHAPE_SIMILARITY = 0.80
 MIN_SHAPE_MARGIN = 0.05
 
 
+# Lado (px) da miniatura usada para estimar o fundo da mesa
+BG_SIDE = 500.0
+# Lado (px) da 1ª passada, que só mede o tamanho das peças
+FIRST_PASS_SIDE = 1200.0
+# Cor pesa mais que luz: reflexos mudam a luminância, peças mudam a cor
+LAB_WEIGHTS = (1.0, 1.4, 1.4)
+
+
+# Luminância (escala 0-255 do OpenCV) abaixo/acima da qual a mesa é "escura"/"clara"
+DARK_TABLE_L, LIGHT_TABLE_L = 70.0, 140.0
+# Peso da luz quando ela muda no sentido "errado": numa mesa escura nenhuma peça é mais escura que o
+# fundo (é reflexo/sombra do vidro); numa mesa clara, nenhuma é mais clara (é brilho)
+WRONG_WAY_L_WEIGHT = 0.3
+# Diferença máxima de tom (a, b ponderados) para um escurecimento numa mesa clara contar como sombra
+SHADOW_MAX_AB = 8.0
+SHADOW_L_WEIGHT = 0.15
+
+
+def _lab_dist(a, b):
+    """Distância de cor pixel a pixel entre `a` e o fundo `b`, com a luz pesando pouco no sentido impossível para uma peça."""
+    dl = a[..., 0] - b[..., 0]
+    ab2 = ((a[..., 1] - b[..., 1]) * LAB_WEIGHTS[1]) ** 2 + ((a[..., 2] - b[..., 2]) * LAB_WEIGHTS[2]) ** 2
+    light = b[..., 0] > LIGHT_TABLE_L
+    # Sombra numa mesa clara: escurece sem mudar o tom do fundo (a luz da sombra puxa um pouco o tom:
+    # pesa só metade)
+    shadow = light & (dl < 0) & (ab2 < SHADOW_MAX_AB ** 2)
+    wrong = ((b[..., 0] < DARK_TABLE_L) & (dl < 0)) | (light & (dl > 0))
+    wl = np.where(shadow, np.float32(SHADOW_L_WEIGHT), np.where(wrong, np.float32(WRONG_WAY_L_WEIGHT), np.float32(1.0)))
+    return np.sqrt((dl * wl) ** 2 + ab2 * np.where(shadow, np.float32(0.25), np.float32(1.0)))
+
+
+def _masked_blur(img, mask, sigma):
+    """Média gaussiana só dos pixels de `mask`; onde não há nenhum por perto, usa uma escala 4× maior."""
+    m = mask.astype(np.float32)
+    num = cv2.GaussianBlur(img * m[..., None], (0, 0), sigma)
+    den = cv2.GaussianBlur(m, (0, 0), sigma)
+    out = num / np.maximum(den, 1e-6)[..., None]
+    weak = den < 0.05
+    if weak.any():
+        num2 = cv2.GaussianBlur(img * m[..., None], (0, 0), sigma * 4)
+        den2 = cv2.GaussianBlur(m, (0, 0), sigma * 4)
+        out[weak] = (num2 / np.maximum(den2, 1e-6)[..., None])[weak]
+    return out
+
+
+def _tile_modes(lab_small, tile):
+    """Cor mais comum de cada bloco de `tile` px, com mediana 3×3 entre blocos para descartar blocos tomados por uma peça."""
+    sh, sw = lab_small.shape[:2]
+    t = max(8, int(tile))
+    gy, gx = int(np.ceil(sh / t)), int(np.ceil(sw / t))
+    q = (lab_small // 8).astype(np.int32)
+    key = (q[..., 0] * 32 + q[..., 1]) * 32 + q[..., 2]
+    modes = np.zeros((gy, gx, 3), np.float32)
+    for i in range(gy):
+        for j in range(gx):
+            blk = key[i * t:(i + 1) * t, j * t:(j + 1) * t].ravel()
+            vals, cnt = np.unique(blk, return_counts=True)
+            sel = lab_small[i * t:(i + 1) * t, j * t:(j + 1) * t].reshape(-1, 3)[blk == vals[np.argmax(cnt)]]
+            modes[i, j] = sel.mean(0)
+    modes = np.dstack([cv2.medianBlur(np.clip(modes[..., c], 0, 255).astype(np.uint8), 3) for c in range(3)])
+    return cv2.resize(modes.astype(np.float32), (sw, sh), interpolation=cv2.INTER_LINEAR)
+
+
+def _body_radius(fg, dt):
+    """Mediana, ponderada pela área, do maior raio inscrito de cada mancha da máscara."""
+    n, cc, st, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    if n < 2:
+        return 3.0
+    peak = np.zeros(n, np.float32)
+    np.maximum.at(peak, cc.ravel(), dt.ravel())
+    r, a = peak[1:], st[1:, cv2.CC_STAT_AREA].astype(np.float64)
+    x, y, w, h = (st[1:, i] for i in range(4))
+    # O que encosta na borda da foto (chão, parede, peças cortadas) não serve de referência
+    inner = (x > 0) & (y > 0) & (x + w < fg.shape[1]) & (y + h < fg.shape[0])
+    keep = (r > 1.5) & inner if (inner & (r > 1.5)).any() else r > 1.5
+    if not keep.any():
+        return 3.0
+    r, a = r[keep], a[keep]
+    order = np.argsort(r)
+    cum = np.cumsum(a[order])
+    return float(max(3.0, r[order][np.searchsorted(cum, cum[-1] / 2)]))
+
+
+def _count_inside(inner, outer, n_outer):
+    """Quantas regiões de `inner` caem em cada região de `outer` (cada interna está toda dentro de uma externa)."""
+    idx = np.flatnonzero(inner)
+    owner = np.zeros(int(inner.max()) + 1, np.int64)
+    owner[inner.flat[idx]] = outer.flat[idx]
+    return np.bincount(owner[1:], minlength=n_outer).astype(np.int32)
+
+
+def _relabel(lab):
+    """Rótulos consecutivos 0..k (0 continua sendo fundo), sem ordenar a imagem toda."""
+    present = np.zeros(int(lab.max()) + 1, bool)
+    present[lab.ravel()] = True
+    present[0] = True
+    lut = (np.cumsum(present) - 1).astype(np.int32)
+    return lut[lab]
+
+
 def _rotate(img, code):
     return img if code is None else cv2.rotate(img, code)
 
@@ -40,66 +140,94 @@ class PuzzleEngine:
     def segment_table_pieces(self, table_img_bgr, max_area_fraction=0.25):
         """
         Separa as peças soltas do fundo da mesa, mesmo com centenas de peças e reflexos.
-        - Fundo LOCAL (mediana numa janela de várias peças): absorve reflexos, sombras e mesa
-          de vidro escura ou clara, e funciona com a mesa coberta de peças.
+        - Fundo LOCAL estimado só com pixels de fundo (mesa coberta de peças, reflexos, vidro escuro
+          ou mesa clara): ver _foreground.
         - Watershed sobre a transformada de distância: separa peças encostadas ou ligadas por brilho.
         """
         h, w = table_img_bgr.shape[:2]
-        lab = cv2.cvtColor(cv2.GaussianBlur(table_img_bgr, (3, 3), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
-        s_ = 400.0 / max(h, w)
-        small = cv2.resize(lab, None, fx=s_, fy=s_, interpolation=cv2.INTER_AREA)
-
-        # 1ª passada com janela larga só para medir o tamanho típico das peças;
-        # 2ª com janela de ~6 peças: acompanha reflexos sem "engolir" peças grandes
-        fg = self._foreground(lab, small, int(round(max(small.shape[:2]) * 0.2)))
-        n0, _, st0, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
-        if n0 > 1:
-            typical_area = float(np.median(st0[1:, cv2.CC_STAT_AREA]))
-            diameter_small = np.sqrt(max(typical_area, 1.0)) * s_
-            fg = self._foreground(lab, small, int(round(np.clip(6 * diameter_small, 15, max(small.shape[:2]) * 0.25))))
-
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=1)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-        # Manchas bem maiores que uma peça típica são peças encostadas: só essas passam pelo
-        # watershed (dividir as normais cortaria peças com "cintura" entre dois encaixes)
+        def clean(m):
+            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel, iterations=1)
+            return cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        # 1ª passada em escala genérica só para medir as peças; a 2ª ajusta o modelo de fundo ao
+        # tamanho delas (acompanha reflexos de borda nítida sem confundir uma peça grande com a mesa)
+        s1 = min(1.0, FIRST_PASS_SIDE / max(h, w))
+        small = cv2.resize(table_img_bgr, None, fx=s1, fy=s1, interpolation=cv2.INTER_AREA) if s1 < 1 else table_img_bgr
+        fg = clean(self._foreground(small))
+        radius = _body_radius(fg, cv2.distanceTransform(fg, cv2.DIST_L2, 5)) / s1
+        fg = clean(self._foreground(table_img_bgr, piece_size=4.0 * radius))
+        # O limiar baixo (que pega abas de cor parecida com a mesa) também pega o halo de 1 px de
+        # transição peça/fundo, que mancharia a comparação com a caixa
+        fg = cv2.erode(fg, kernel)
+
+        # Raio do corpo pelo pico da transformada de distância de cada mancha: vale também dentro de
+        # uma "corrente" de peças encostadas, onde a área mediana não serve. Mediana ponderada pela
+        # área: fiapos de reflexo e pontas de abas são muitos, mas pequenos
+        dt_all = cv2.distanceTransform(fg, cv2.DIST_L2, 5)
+        radius = _body_radius(fg, dt_all)
+        # Partes do desenho da cor da mesa viram furos dentro da peça: furos menores que o miolo de uma
+        # peça são tapados (os vãos entre peças vizinhas tocam o fundo aberto e ficam)
+        _, holes, st_h, _ = cv2.connectedComponentsWithStats((fg == 0).astype(np.uint8), connectivity=4)
+        small_holes = np.where(st_h[:, cv2.CC_STAT_AREA] < 2.0 * radius * radius)[0]
+        small_holes = small_holes[small_holes > 0]
+        if small_holes.size:
+            fg[np.isin(holes, small_holes)] = 255
+        # Riscos e reflexos finos no vidro ligam peças vizinhas: uma abertura de ~0,3 r os corta
+        # sem estrangular o pescoço das abas (≈ 0,8 r)
+        k = int(max(3, round(0.3 * radius))) | 1
+        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        dt_all = cv2.distanceTransform(fg, cv2.DIST_L2, 5)
+
+        # Um miolo por peça: a região bem dentro do corpo (dt > 0,75 r). Uma peça com dois encaixes
+        # opostos pode ter o miolo partido na "cintura"; partes a menos de ~1 r umas das outras são
+        # a mesma peça (miolos de peças vizinhas ficam a ≥ 1,5 r)
+        strong = (dt_all > 0.75 * radius).astype(np.uint8)
+        g = int(max(3, round(1.0 * radius))) | 1
+        merged = cv2.dilate(strong, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))) & (fg > 0)
+        n_m, merged_lab = cv2.connectedComponents(merged.astype(np.uint8))
+        _, strong_lab = cv2.connectedComponents(strong)
+        # ...mas uma mancha de brilho larga também tem miolo e, unida, "cola" os miolos de todas as
+        # peças em volta: grupos de mais de 3 partes voltam a ser miolos separados
+        parts = _count_inside(strong_lab, merged_lab, n_m)
+        crowded = np.isin(merged_lab, np.where(parts > 3)[0])
+        core_lab = _relabel(np.where(crowded, np.where(strong > 0, strong_lab + n_m, 0), merged_lab))
+        cores = core_lab > 0
+
         n1, cc1, st1, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
         regions = fg.copy()
-        # Raio do corpo pelos picos da transformada de distância: cada peça tem um, mesmo dentro de
-        # uma "corrente" de peças encostadas — a área mediana não serve quando quase todas se tocam
-        dt_all = cv2.distanceTransform(fg, cv2.DIST_L2, 5)
-        peaks = dt_all[(dt_all == cv2.dilate(dt_all, np.ones((5, 5), np.uint8))) & (dt_all > 1.5)]
-        # Pontas das abas também são picos (raio menor): o corpo é o grupo de cima
-        radius = float(np.percentile(peaks, 75)) if peaks.size else 3.0
-        single_area = 7.0 * radius * radius  # corpo ≈ 2,6 r de lado (com abas/encaixes)
-        # Miolos fortes (bem dentro de um corpo): a "cintura" entre dois encaixes não chega a 0,75 r
-        strong = (dt_all > 0.75 * radius).astype(np.uint8)
-        n_s, s_lab = cv2.connectedComponents(strong)
-        big_ids = []
-        for i in range(1, n1):
-            if st1[i, cv2.CC_STAT_AREA] > 1.5 * single_area:
-                x0, y0, ww, hh = st1[i, :4]
-                inside = s_lab[y0:y0 + hh, x0:x0 + ww][cc1[y0:y0 + hh, x0:x0 + ww] == i]
-                if len(np.unique(inside[inside > 0])) >= 2:  # 2+ miolos = 2+ peças encostadas
-                    big_ids.append(i)
-        if big_ids:
+        n_cores = _count_inside(core_lab, cc1, n1)
+        # Área típica de UMA peça, medida nas manchas de um miolo só (as abas mudam muito a razão
+        # área/raio entre modelos de peça)
+        x0, y0, ww, hh = (st1[:, i] for i in range(4))
+        inner = (x0 > 0) & (y0 > 0) & (x0 + ww < w) & (y0 + hh < h)
+        singles = st1[1:, cv2.CC_STAT_AREA][(n_cores[1:] == 1) & inner[1:]]
+        single_area = float(np.median(singles)) if singles.size >= 5 else 7.0 * radius * radius
+
+        # Só manchas com 2+ miolos E bem maiores que uma peça passam pelo watershed (dividir as outras
+        # cortaria peças com cintura)
+        big_ids = np.where((n_cores >= 2) & (st1[:, cv2.CC_STAT_AREA] > 1.5 * single_area))[0]
+        big_ids = big_ids[big_ids > 0]
+        if big_ids.size:
             big = np.isin(cc1, big_ids)
             fg_big = (big & (fg > 0)).astype(np.uint8) * 255
-            seeds = (strong.astype(bool) & big).astype(np.uint8)
-            _, markers = cv2.connectedComponents(seeds)
-            markers = markers + 1
-            markers[(fg_big > 0) & (seeds == 0)] = 0
-            ws = cv2.watershed(cv2.cvtColor(fg_big, cv2.COLOR_GRAY2BGR), markers.astype(np.int32))
+            markers = np.where(big, core_lab, 0).astype(np.int32) + 1
+            markers[(fg_big > 0) & (markers == 1)] = 0
+            ws = cv2.watershed(cv2.cvtColor(fg_big, cv2.COLOR_GRAY2BGR), markers)
             regions[big & (ws == -1)] = 0  # linhas de corte entre as peças grudadas
+            # Brilho e reflexos colados a uma peça entram na região dela: nenhuma parte de peça fica
+            # a mais de ~2,3 r do miolo (ponta da aba), o resto é descartado
+            far = cv2.distanceTransform((cores == 0).astype(np.uint8), cv2.DIST_L2, 5) > 2.3 * radius
+            regions[big & far] = 0
 
         # Cada região vira uma peça
         n, cc, stats, centroids = cv2.connectedComponentsWithStats((regions > 0).astype(np.uint8), connectivity=4)
         areas = stats[1:, cv2.CC_STAT_AREA]
         if not len(areas):
             return []
-        min_area = max(30.0, single_area * 0.25)
-        max_area = min(h * w * max_area_fraction, single_area * 8)
+        min_area = max(30.0, single_area * 0.3)
+        max_area = min(h * w * max_area_fraction, single_area * 4)
 
         pieces = []
         for i in range(1, n):
@@ -126,21 +254,34 @@ class PuzzleEngine:
             })
         return pieces
 
-    def _foreground(self, lab, small, k):
-        """Máscara peça × fundo, com o fundo estimado pela mediana numa janela de k px (na escala `small`)."""
-        h, w = lab.shape[:2]
-        k = max(3, int(k) | 1)
-        bg = np.dstack([cv2.medianBlur(np.clip(small[..., c], 0, 255).astype(np.uint8), k) for c in range(3)])
-        bg = cv2.resize(bg.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-        # Cor pesa mais que luz: reflexos mudam a luminância, peças mudam a cor
-        dist = np.linalg.norm((lab - bg) * np.array([1.0, 1.4, 1.4], np.float32), axis=2)
-        dist8 = np.clip(dist * 3, 0, 255).astype(np.uint8)
-        otsu, _ = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        # Otsu fica alto quando as peças contrastam muito e corta abas de cor parecida com a mesa:
-        # o ruído do próprio fundo (pixels claramente de fundo) serve de teto para o limiar
-        background = dist8[dist8 < otsu * 0.5]
-        noise = float(np.percentile(background, 99)) * 2.0 + 4.0 if background.size else otsu
-        _, fg = cv2.threshold(dist8, max(6.0, min(otsu, noise)), 255, cv2.THRESH_BINARY)
+    def _foreground(self, img_bgr, piece_size=None):
+        """
+        Máscara peça × fundo.
+        O fundo é estimado só com pixels que já parecem fundo (convolução normalizada), começando pela
+        cor mais comum de cada bloco: a mesa é uma cor só e as peças são muitas, então mesmo com mais da
+        metade da mesa coberta o fundo continua sendo a moda. Algumas passadas acompanham reflexos e
+        sombras sem que as peças "contaminem" o fundo (o que a mediana simples fazia em fotos de perto).
+        """
+        h, w = img_bgr.shape[:2]
+        lab = cv2.cvtColor(cv2.GaussianBlur(img_bgr, (3, 3), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+        s_ = BG_SIDE / max(h, w)
+        small = cv2.resize(lab, None, fx=s_, fy=s_, interpolation=cv2.INTER_AREA)
+        if piece_size:  # blocos de ~3 peças, fundo suavizado na escala de ~1 peça
+            bg = _tile_modes(small, tile=3.0 * piece_size * s_)
+            sigma = max(1.5, piece_size * s_)
+        else:
+            bg = _tile_modes(small, tile=max(small.shape[:2]) / 14.0)
+            sigma = max(small.shape[:2]) * 0.03
+        bgm = _lab_dist(small, bg) < 20
+        thr = 8.0
+        for _ in range(4):
+            bg = _masked_blur(small, bgm, sigma)
+            d = _lab_dist(small, bg)
+            noise = float(np.percentile(d[bgm], 90)) if bgm.any() else 5.0
+            thr = max(8.0, 2.5 * noise)
+            bgm = d < thr * 0.5
+        bg = cv2.resize(bg, (w, h), interpolation=cv2.INTER_LINEAR)
+        fg = (_lab_dist(lab, bg) > thr).astype(np.uint8) * 255
         return fg
 
     def _deskew_local(self, crop_bgr, crop_mask):
