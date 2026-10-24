@@ -35,6 +35,8 @@ NCC_NEUTRAL = 0.45
 MATCH_CELL = 64
 # Lado do corpo da peça ≈ k × raio do maior círculo inscrito na máscara (sem/ com encaixes fundos)
 BODY_FROM_RADIUS = (2.0, 2.3, 2.6, 3.0)
+# Com a escala da folha A4, o corpo é conhecido: testa só ±8% (corte e impressão variam um pouco)
+KNOWN_BODY_STEPS = (0.92, 1.0, 1.08)
 # O centro do corpo pode estar até esta fração de célula longe do centro da célula
 MATCH_REACH = 0.3
 MIN_TEXTURE_STD = 8.0
@@ -44,6 +46,20 @@ MIN_CELL_SCORE = 0.62
 MIN_CELL_MARGIN = 0.06
 
 SIDES = ("top", "right", "bottom", "left")
+# Formato dos lados (fração do lado do corpo): faixa do meio (aba/encaixe), faixa perto dos cantos
+# (corpo) e diferença mínima entre as duas para contar como aba ou encaixe (≈ 0,25 numa peça comum)
+SIDE_MID_BAND = 0.15
+SIDE_CORNER_BAND = (0.28, 0.40)
+SIDE_SHAPE_MIN = 0.10
+# Buraco no tabuleiro: célula reamostrada para HOLE_CELL px; tolerância mínima de cor do vazio;
+# quanto (fração da célula) o buraco pode passar da linha da célula perto dos cantos antes de "vazar"
+HOLE_CELL = 48
+HOLE_MIN_TOL = 10.0
+HOLE_LEAK = 0.2
+# Peso de cada lado da peça que não bate com o buraco (filtro suave)
+HOLE_MISMATCH = 0.85
+# ... contando no máximo estes lados: 3-4 lados "errados" costumam ser a peça endireitada errado, não outra peça
+HOLE_MAX_MISMATCHES = 2
 
 
 def _block_means(lab, x0, y0, w, h, blocks=3):
@@ -186,12 +202,13 @@ def scan_board(box_rect, board_rect, cols, rows, margin, mat_points=None):
     placed = prob > 0.5
     confidence = np.abs(prob - 0.5) * 2
 
-    # 7. Células duvidosas seguem a maioria das 8 vizinhas; ilhadas (7+ vizinhas discordam) também,
-    # a não ser que o desenho bata com certeza (peça solta no lugar exato, cercada de vazio, é rara)
+    # 7. Células duvidosas seguem a maioria das 8 vizinhas; "montada" ilhada no vazio (7+ vizinhas
+    # vazias) também, a não ser que o desenho bata com certeza: peça solta no lugar exato, cercada de
+    # vazio, é rara. O contrário (um buraco no meio da área montada) é o caso mais comum e fica.
     p = placed.astype(np.float32)
     neigh = cv2.filter2D(p, -1, np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], np.float32), borderType=cv2.BORDER_REPLICATE) / 8
     doubtful = confidence < SCAN_SMOOTH_BELOW
-    isolated = (np.abs(neigh - p) >= 7 / 8) & (confidence < SCAN_KEEP_ISOLATED)
+    isolated = placed & (neigh <= 1 / 8) & (confidence < SCAN_KEEP_ISOLATED)
     placed = np.where(doubtful | isolated, neigh >= 0.5, placed)
 
     return {"placed": placed, "confidence": confidence, "mat_found": mat_found}
@@ -313,10 +330,155 @@ def piece_flats(upright_mask):
     return frozenset(side for side, run in runs.items() if run >= 0.62 * body)
 
 
+def side_shapes(mask):
+    """
+    Formato de cada lado de uma silhueta endireitada (peça solta ou buraco no tabuleiro):
+    {"top"|"right"|"bottom"|"left": "tab" | "blank" | "flat"}, ou None se a máscara for pequena.
+    Compara quanto a silhueta avança no MEIO do lado (onde ficam aba e encaixe) com quanto avança
+    perto dos CANTOS (o próprio corpo). A caixa do corpo vem dos cantos, não do recorte: as abas
+    aumentariam o recorte.
+    """
+    if mask is None:
+        return None
+    m = mask > 127
+    ys, xs = np.nonzero(m)
+    if len(xs) < 50:
+        return None
+    # Caixa inicial do corpo: centroide ± √área/2 (abas e encaixes se compensam na área; o recorte
+    # inteiro seria até 1,5× maior que o corpo numa peça com 4 abas)
+    half = 0.5 * np.sqrt(len(xs))
+    box = [xs.mean() - half, ys.mean() - half, xs.mean() + half, ys.mean() + half]  # x0, y0, x1, y1
+    shapes = None
+    for _ in range(3):
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        body = min(box[2] - box[0], box[3] - box[1])
+        if body < 8:
+            return None
+        shapes, corner_ext = {}, {}
+        for side in SIDES:
+            out, inn, corner = _side_extent(m, side, cx, cy, body)
+            if out is None or corner is None:
+                return None
+            # Aba: algum ponto do meio sai bem além do corpo; encaixe: algum ponto entra bem nele
+            # (o meio inteiro, não só o centro: abas costumam ficar um pouco deslocadas)
+            if (out - corner) / body > SIDE_SHAPE_MIN:
+                shapes[side] = "tab"
+            elif (corner - inn) / body > SIDE_SHAPE_MIN:
+                shapes[side] = "blank"
+            else:
+                shapes[side] = "flat"
+            corner_ext[side] = corner
+        box = [cx - corner_ext["left"], cy - corner_ext["top"], cx + corner_ext["right"], cy + corner_ext["bottom"]]
+    return shapes
+
+
+def _side_extent(m, side, cx, cy, body):
+    """Distância do centro até a silhueta na direção de `side`: maior e menor no meio do lado, mediana perto dos cantos."""
+    h, w = m.shape
+    # Vira a máscara para que `side` seja o de cima
+    if side == "top":
+        mm, ax, ay = m, cx, cy
+    elif side == "bottom":
+        mm, ax, ay = m[::-1], cx, h - 1 - cy
+    elif side == "left":
+        mm, ax, ay = m.T, cy, cx
+    else:
+        mm, ax, ay = m[:, ::-1].T, cy, w - 1 - cx
+    first = np.where(mm.any(0), mm.argmax(0), -1)  # 1ª linha com silhueta em cada coluna
+
+    def extents(lo, hi, n):
+        cols = [int(round(ax + f * body)) for f in np.linspace(lo, hi, n)]
+        return [ay - first[c] for c in cols if 0 <= c < len(first) and first[c] >= 0]
+
+    mid = extents(-SIDE_MID_BAND, SIDE_MID_BAND, 11)
+    corners = extents(-SIDE_CORNER_BAND[1], -SIDE_CORNER_BAND[0], 5) + extents(SIDE_CORNER_BAND[0], SIDE_CORNER_BAND[1], 5)
+    if len(mid) < 3 or len(corners) < 3:
+        return None, None, None
+    # 2º maior/menor: um pixel solto não vira aba
+    mid = np.sort(mid)
+    return float(mid[-2]), float(mid[1]), float(np.median(corners))
+
+
+def hole_shapes(board_rect, cols, rows, margin, col, row, flats=None):
+    """
+    Formato do buraco de uma célula vazia no tabuleiro retificado: as abas das vizinhas montadas
+    entram no buraco (lá a peça que falta tem encaixe) e os encaixes delas o alargam (lá ela tem aba).
+    Retorna {lado: "tab"|"blank"|"flat"|None} — None quando a vizinha daquele lado também falta (o
+    buraco "vaza") ou a foto não deixa medir — ou None se nem o centro da célula parecer vazio.
+    `board_rect` pode ser o tabuleiro inteiro ou um recorte de 3 × 3 células (cols=rows=3, col=row=1).
+    """
+    bh, bw = board_rect.shape[:2]
+    cwi, chi = bw / (cols + 2 * margin), bh / (rows + 2 * margin)
+    # Janela de 2 × 2 células centrada na célula, com a célula em ~HOLE_CELL px
+    s = HOLE_CELL / cwi
+    x0, y0 = (margin + col - 0.5) * cwi, (margin + row - 0.5) * chi
+    M = np.array([[s, 0, -x0 * s], [0, s, -y0 * s]], np.float32)
+    size = (int(round(2 * cwi * s)), int(round(2 * chi * s)))
+    win = cv2.warpAffine(board_rect, M, size, flags=cv2.INTER_AREA, borderMode=cv2.BORDER_REPLICATE)
+    lab = cv2.GaussianBlur(_lab(win), (0, 0), 1.2)
+    h, w = lab.shape[:2]
+    cw, ch = w / 2, h / 2  # tamanho da célula na janela
+    cx, cy = w / 2, h / 2
+    core = lab[int(cy - 0.15 * ch):int(cy + 0.15 * ch), int(cx - 0.15 * cw):int(cx + 0.15 * cw)].reshape(-1, 3)
+    ref = np.median(core, 0)
+    weights = np.array([0.6, 1.0, 1.0], np.float32)
+    d = np.sqrt((((lab - ref) * weights) ** 2).sum(-1))
+    spread = float(np.percentile(np.sqrt((((core - ref) * weights) ** 2).sum(-1)), 90))
+    empty = (d < max(HOLE_MIN_TOL, 2.5 * spread)).astype(np.uint8)
+    k = max(3, int(round(0.08 * cw)) | 1)
+    empty = cv2.morphologyEx(empty, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    n, cc = cv2.connectedComponents(empty)
+    lab_c = cc[int(cy), int(cx)]
+    if lab_c == 0:
+        return None
+    hole = cc == lab_c
+    # Tapa riscos do veio/partes escuras dentro do buraco
+    hole = cv2.morphologyEx(hole.astype(np.uint8), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0
+    area = hole.sum() / float(cw * ch)
+    if area < 0.4:
+        return None
+    out = {}
+    for side in SIDES:
+        res = _side_extent(hole, side, cx, cy, cw)
+        outer, inner, corner = res
+        if corner is None:
+            out[side] = None
+            continue
+        # Vazou: o buraco segue bem além da linha da célula também perto dos cantos (vizinha vazia)
+        if corner > 0.5 * cw + HOLE_LEAK * cw:
+            out[side] = None
+        elif (outer - corner) / cw > SIDE_SHAPE_MIN:
+            out[side] = "tab"
+        elif (corner - inner) / cw > SIDE_SHAPE_MIN:
+            out[side] = "blank"
+        else:
+            out[side] = "flat"
+    # Lados na borda do quebra-cabeça são retos por definição (`flats`: quando a imagem é só um
+    # recorte em volta da célula, a borda real vem de fora)
+    for side in (expected_flats(cols, rows, col, row) if flats is None else flats):
+        out[side] = "flat"
+    return out
+
+
 def rotate_sides(sides, deg):
     """Lados após girar a peça `deg` graus no sentido horário."""
     k = (deg // 90) % 4
     return frozenset(SIDES[(SIDES.index(s) + k) % 4] for s in sides)
+
+
+def rotate_shapes(shapes, deg):
+    """Formato dos lados após girar a peça `deg` graus no sentido horário."""
+    k = (deg // 90) % 4
+    return {SIDES[(SIDES.index(side) + k) % 4]: kind for side, kind in shapes.items()}
+
+
+def shape_mismatches(piece_shapes, hole, deg):
+    """Quantos lados conhecidos do buraco não batem com a peça girada `deg` (None: nada a comparar)."""
+    if not piece_shapes or not hole:
+        return None
+    rot = rotate_shapes(piece_shapes, deg)
+    known = [side for side, kind in hole.items() if kind is not None]
+    return sum(rot[side] != hole[side] for side in known) if known else None
 
 
 def _body_frame(piece):
@@ -350,20 +512,84 @@ def _rotate_point(pt, w, h, deg):
     return (x, y)
 
 
-def _ab_hist(lab_u8, mask=None):
-    hist = cv2.calcHist([lab_u8], [1, 2], mask, [16, 16], [0, 256, 0, 256])
-    return cv2.normalize(hist, hist).flatten()
+def _lab_hist(lab_u8, mask=None):
+    """
+    Histograma Lab (luz em 4 faixas, cor em 16 × 16) suavizado entre bins vizinhos: uma pequena
+    diferença de tom entre as fotos cai no bin ao lado em vez de zerar a semelhança.
+    """
+    h = cv2.calcHist([lab_u8], [0, 1, 2], mask, list(HIST_BINS), [0, 256, 0, 256, 0, 256]).reshape(HIST_BINS)
+    for ax in (1, 2):
+        h = (h + np.roll(h, 1, ax) * 0.5 + np.roll(h, -1, ax) * 0.5) / 2.0
+    total = float(h.sum())
+    return (h / total).astype(np.float32).ravel() if total > 0 else h.astype(np.float32).ravel()
 
+
+def _color_similarity(h1, h2):
+    """1 − distância de Bhattacharyya (0..1)."""
+    return 1.0 - float(cv2.compareHist(h1, h2, cv2.HISTCMP_BHATTACHARYYA))
+
+
+class ColorNormalizer:
+    """
+    Leva as cores da foto da mesa para as da caixa (transferência de Reinhard em Lab): média e
+    desvio de cada canal das peças viram os da arte das células que elas devem preencher. Corrige o
+    que muda entre as duas fotos (luz quente, câmera, impressão mais saturada) — no bench com fotos
+    reais, a célula certa saiu da 80ª para a 1ª-3ª posição entre 201 pela cor.
+    """
+
+    def __init__(self, piece_px, art_px):
+        self.mb, self.ma = piece_px.mean(0), art_px.mean(0)
+        self.k = np.clip(art_px.std(0) / (piece_px.std(0) + 1e-6), 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)
+
+    def __call__(self, lab_u8):
+        out = (lab_u8.astype(np.float32) - self.mb) * self.k + self.ma
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
+    """
+    Normalizador a partir das peças da(s) foto(s) e da arte. As peças soltas são as que faltam no
+    tabuleiro: com o mapa do escaneamento ('0' = falta), a referência é a arte só dessas células.
+    """
+    piece_px = []
+    rng = np.random.default_rng(0)
+    for p in pieces:
+        lab = cv2.cvtColor(p["crop"], cv2.COLOR_BGR2LAB).reshape(-1, 3)
+        px = lab[(p["mask"] > 127).ravel()]
+        if len(px):
+            piece_px.append(px[rng.choice(len(px), min(len(px), 400), replace=False)])
+    if not piece_px:
+        return None
+    art = cv2.cvtColor(box_rect, cv2.COLOR_BGR2LAB)
+    h, w = art.shape[:2]
+    if scan_map and len(scan_map) == cols * rows and scan_map.count("0") >= COLOR_MIN_MISSING:
+        missing = np.array([ch == "0" for ch in scan_map]).reshape(rows, cols)
+        sel = cv2.resize(missing.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+        art_px = art[sel]
+    else:
+        art_px = art.reshape(-1, 3)
+    art_px = art_px[rng.choice(len(art_px), min(len(art_px), 200000), replace=False)]
+    return ColorNormalizer(np.concatenate(piece_px).astype(np.float32), art_px.astype(np.float32))
+
+
+# Histograma de cor (luz, a, b) e quanto a normalização de cor pode esticar o desvio de um canal
+HIST_BINS = (4, 16, 16)
+COLOR_MAX_STRETCH = 2.0
+# Mínimo de células faltando para usar só elas como referência de cor da arte
+COLOR_MIN_MISSING = 20
 
 # Com centenas de peças na mesa, só as N mais parecidas na cor (e com bordas compatíveis)
 # passam pela comparação fina, que é a parte cara
 PREFILTER_KEEP = 60
 
 
-def match_cell(patch, pieces, top_k=5):
+def match_cell(patch, pieces, top_k=5, hole=None, color_tf=None):
     """
     Ordena as peças da mesa pela semelhança com a célula-alvo da arte.
-    Retorna lista (melhor primeiro) de dict(piece, rotation, score, visual, color, flats_ok).
+    `hole`: formato do buraco no tabuleiro (hole_shapes), se conhecido — cada lado que não bate com
+    a peça naquela rotação pesa HOLE_MISMATCH (filtro suave: a medida dos lados pode errar).
+    `color_tf`: ColorNormalizer das fotos da mesa para as cores da caixa (cor e desenho).
+    Retorna lista (melhor primeiro) de dict(piece, rotation, score, visual, color, flats_ok, shape_ok).
     """
     region_lab = cv2.cvtColor(patch["image"], cv2.COLOR_BGR2LAB)
     rh, rw = region_lab.shape[:2]
@@ -375,7 +601,7 @@ def match_cell(patch, pieces, top_k=5):
     # Histograma de cor da célula (com um pouco das vizinhas, como as abas da peça)
     hx1, hy1 = int(max(0, cx - cell_w * 0.65)), int(max(0, cy - cell_h * 0.65))
     hx2, hy2 = int(min(rw, cx + cell_w * 0.65)), int(min(rh, cy + cell_h * 0.65))
-    cell_hist = _ab_hist(region_lab[hy1:hy2, hx1:hx2])
+    cell_hist = _lab_hist(region_lab[hy1:hy2, hx1:hx2])
     # Célula lisa (céu, fundo): o desenho não diferencia peças, a cor sim → peso do visual pela textura
     cell_std = float(region_lab[hy1:hy2, hx1:hx2, 0].std())
     w_visual = float(np.clip(cell_std / 25.0, 0.25, 0.75))
@@ -383,29 +609,44 @@ def match_cell(patch, pieces, top_k=5):
     down = patch.get("native_cell", cell_w) / cell_w
 
     # Pré-filtro barato: histograma de cor + lados retos compatíveis com a posição da célula
+    use_hole = bool(hole) and any(v is not None for v in hole.values())
+
+    def shape_factor(shapes, deg):
+        miss = shape_mismatches(shapes, hole, deg) if use_hole else None
+        return 1.0 if miss is None else HOLE_MISMATCH ** min(miss, HOLE_MAX_MISMATCHES)
+
     pre = []
     for piece in pieces:
         flats = piece_flats(piece.get("upright_mask"))
         flats_ok = any(rotate_sides(flats, deg) == expected for deg, _ in ROTATIONS)
+        shapes = side_shapes(piece.get("upright_mask")) if use_hole else None
+        best_shape = max(shape_factor(shapes, deg) for deg, _ in ROTATIONS)
         piece_lab = cv2.cvtColor(piece["crop"], cv2.COLOR_BGR2LAB)
-        color = (cv2.compareHist(cell_hist, _ab_hist(piece_lab, piece["mask"]), cv2.HISTCMP_CORREL) + 1) / 2
-        pre.append((color * (1.0 if flats_ok else 0.5), color, flats, piece))
+        if color_tf is not None:
+            piece_lab = color_tf(piece_lab)
+        color = _color_similarity(cell_hist, _lab_hist(piece_lab, piece["mask"]))
+        pre.append((color * (1.0 if flats_ok else 0.5) * best_shape, color, flats, shapes, piece))
     pre.sort(key=lambda t: t[0], reverse=True)
 
     results = []
-    for _, color, flats, piece in pre[:PREFILTER_KEEP]:
+    for _, color, flats, shapes, piece in pre[:PREFILTER_KEEP]:
         frame = _body_frame(piece)
         if frame is None:
             continue
         lab_full, mask_full, radius, body_c = frame
+        if color_tf is not None:
+            lab_full = color_tf(lab_full)
         texture = min(1.0, float(lab_full[:, :, 0][mask_full > 0].std()) / MIN_TEXTURE_STD) if (mask_full > 0).any() else 0.0
 
         best, best_rot = -1.0, 0
         allowed = [deg for deg, _ in ROTATIONS if rotate_sides(flats, deg) == expected]
         flats_ok = bool(allowed)
-        for k in BODY_FROM_RADIUS:
-            # Corpo da peça ≈ k × raio → mede cell_w px na arte normalizada
-            scale = cell_w / (k * radius)
+        # Corpo da peça em px: conhecido pela folha A4 (mm × px/mm) ou estimado pelo raio inscrito
+        bodies = [piece["body_px"] * f for f in KNOWN_BODY_STEPS] if piece.get("body_px") \
+            else [k * radius for k in BODY_FROM_RADIUS]
+        for body in bodies:
+            # O corpo mede cell_w px na arte normalizada
+            scale = cell_w / body
             tw, th = int(round(lab_full.shape[1] * scale)), int(round(lab_full.shape[0] * scale))
             if tw < 8 or th < 8:
                 continue
@@ -435,14 +676,18 @@ def match_cell(patch, pieces, top_k=5):
                                         cv2.TM_CCOEFF_NORMED, mask=m3)
                 v = float(np.nanmax(res)) if np.isfinite(res).any() else -1.0
                 s_ = v * texture
-                if s_ > best:
+                # A rotação escolhida também precisa encaixar no buraco
+                if s_ * shape_factor(shapes, deg) > best * shape_factor(shapes, best_rot):
                     best, best_rot = s_, deg
 
         score = w_visual * max(0.0, best) + (1 - w_visual) * color
         if not flats_ok:
             score *= 0.5  # borda/canto na posição errada: quase certamente outra peça
+        factor = shape_factor(shapes, best_rot)
+        score *= factor
         results.append({"piece": piece, "rotation": best_rot, "score": score, "visual": best,
-                        "color": color, "flats_ok": flats_ok})
+                        "color": color, "flats_ok": flats_ok,
+                        "shape_ok": None if not use_hole else factor == 1.0})
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_k]
@@ -452,13 +697,18 @@ def is_confident(ranked):
     if not ranked:
         return False
     margin = ranked[0]["score"] - (ranked[1]["score"] if len(ranked) > 1 else 0.0)
-    return ranked[0]["score"] >= MIN_CELL_SCORE and margin >= MIN_CELL_MARGIN and ranked[0]["flats_ok"]
+    return (ranked[0]["score"] >= MIN_CELL_SCORE and margin >= MIN_CELL_MARGIN and ranked[0]["flats_ok"]
+            and ranked[0].get("shape_ok") is not False)
 
 
-def draw_candidates(table_bgr, ranked, confident):
-    """Circula os candidatos numerados: 1 em verde (ou âmbar se incerto), os demais em cinza-claro."""
+def draw_candidates(table_bgr, ranked, confident, ranks=None):
+    """
+    Circula os candidatos numerados: 1 em verde (ou âmbar se incerto), os demais em cinza-claro.
+    `ranks`: posição (0 = melhor) de cada candidato na lista geral, quando a foto tem só alguns deles.
+    """
     out = table_bgr.copy()
-    for i, cand in reversed(list(enumerate(ranked))):
+    ranks = list(range(len(ranked))) if ranks is None else ranks
+    for i, cand in reversed(list(zip(ranks, ranked))):
         x, y, w, h = cand["piece"]["bbox"]
         cx, cy = cand["piece"]["centroid"]
         radius = int(max(w, h) * 0.75)

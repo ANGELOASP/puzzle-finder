@@ -399,7 +399,7 @@
             </li>
             <li class="flex items-center gap-2 text-slate-400" id="checkTable">
               <svg class="icon w-[18px] h-[18px]"><use href="#i-circle"/></svg>
-              <span>Câmera ao vivo ou foto da mesa</span>
+              <span>Câmera ao vivo ou fotos das peças</span>
             </li>
           </ul>
 
@@ -413,7 +413,15 @@
             <span class="h-px flex-1 bg-slate-800"></span>ou<span class="h-px flex-1 bg-slate-800"></span>
           </div>
 
-          <!-- Foto estática da mesa: câmera (capture) ou foto já salva no aparelho -->
+          <!-- Fotos das peças: padrão é a folha A4 (escala, perspectiva e branco de referência) -->
+          <div class="p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 text-sm">
+            <p class="font-semibold text-slate-200">Fotos das peças sobre folha A4</p>
+            <ol class="mt-1.5 space-y-1 text-xs text-slate-400 list-decimal list-inside leading-relaxed">
+              <li>Coloque as peças <strong class="text-slate-300">viradas para cima</strong> numa folha A4 branca, <strong class="text-slate-300">sem uma encostar na outra</strong>.</li>
+              <li>Fotografe <strong class="text-slate-300">de cima</strong>, com a folha inteira na foto e sem reflexo de lâmpada.</li>
+              <li>Encheu a folha? Troque as peças e tire outra foto: dá para anexar <span id="tablePhotosMax">8</span>.</li>
+            </ol>
+          </div>
           <div class="grid grid-cols-2 gap-2">
             <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200 transition">
               <svg class="icon w-[18px] h-[18px]"><use href="#i-camera"/></svg>
@@ -423,14 +431,13 @@
             <label class="h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-700 hover:ring-slate-500 focus-within:ring-2 focus-within:ring-emerald-400 cursor-pointer text-sm font-semibold text-slate-200 transition">
               <svg class="icon w-[18px] h-[18px]"><use href="#i-image"/></svg>
               <span>Da galeria</span>
-              <input type="file" id="tableInputGallery" accept="image/*" class="sr-only">
+              <input type="file" id="tableInputGallery" accept="image/*" multiple class="sr-only">
             </label>
           </div>
           <button id="btnFind" disabled class="w-full h-12 px-3 flex items-center justify-center gap-2 rounded-xl bg-slate-100 hover:bg-white text-slate-950 text-sm font-bold transition active:scale-[0.98] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed">
             <svg class="icon w-[18px] h-[18px]"><use href="#i-search"/></svg>
-            Encontrar peça pela foto
+            <span id="btnFindText">Encontrar peça nas fotos</span>
           </button>
-          <p class="text-xs text-slate-500 leading-relaxed">Funciona melhor com as peças viradas para cima, sem encostar umas nas outras, numa mesa de cor bem diferente delas (vidro ou pano escuro é o ideal) e sem reflexo de lâmpada.</p>
 
           <!-- Indicador de Carregamento -->
           <div id="loading" class="hidden p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
@@ -442,12 +449,13 @@
           </div>
         </div>
 
-        <!-- Preview da Mesa -->
-        <div id="tableContainer" class="hidden rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-950 overflow-hidden flex items-center justify-center min-h-[12rem]">
-          <img id="tablePreview" alt="Foto das peças soltas na mesa" class="max-h-72 w-auto object-contain">
+        <!-- Fotos anexadas -->
+        <div id="tableContainer" class="hidden flex-col gap-2">
+          <p class="text-sm text-slate-300"><span id="tablePhotosCount">0 fotos</span> <button type="button" id="btnClearTablePhotos" class="ml-2 text-xs text-slate-400 underline underline-offset-2 hover:text-slate-200">remover todas</button></p>
+          <ul id="tablePhotosList" class="grid grid-cols-3 sm:grid-cols-4 gap-2" aria-label="Fotos das peças anexadas"></ul>
         </div>
         <div id="tablePlaceholder" class="hidden md:flex rounded-xl border border-dashed border-slate-800 items-center justify-center min-h-[12rem] p-6 text-center text-sm text-slate-500">
-          Espalhe as peças sobre um fundo liso e de cor contrastante, sem sobrepor, com boa luz e sem reflexos.
+          As fotos das peças aparecem aqui. Uma folha A4 por foto, peças sem encostar.
         </div>
       </div>
     </section>
@@ -489,9 +497,13 @@
           </div>
         </div>
 
-        <!-- Mesa com Destaque -->
-        <div class="md:col-span-2 rounded-xl ring-1 ring-inset ring-slate-800 bg-black overflow-hidden flex justify-center">
-          <img id="highlightedTable" alt="Foto da mesa com a peça encontrada circulada" class="w-full max-h-[28rem] object-contain">
+        <!-- Mesa com Destaque (uma aba por foto que tem candidatas) -->
+        <div class="md:col-span-2 flex flex-col gap-2">
+          <div id="resultPhotoTabs" class="hidden flex flex-wrap gap-2" role="tablist" aria-label="Fotos com candidatas"></div>
+          <div class="rounded-xl ring-1 ring-inset ring-slate-800 bg-black overflow-hidden flex justify-center">
+            <img id="highlightedTable" alt="Foto das peças com a encontrada circulada" class="w-full max-h-[28rem] object-contain">
+          </div>
+          <p id="paperNotice" class="hidden text-xs text-amber-300"></p>
         </div>
       </div>
     </section>

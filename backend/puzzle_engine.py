@@ -33,6 +33,11 @@ MIN_SHAPE_MARGIN = 0.05
 
 # Lado (px) da miniatura usada para estimar o fundo da mesa
 BG_SIDE = 500.0
+# Suavização da máscara de cada peça (σ como fração do lado do corpo)
+MASK_SMOOTH = 0.03
+# Corpo (px) abaixo do qual a inclinação é medida pela colinearidade, numa máscara ampliada até SMALL_BODY_UPSCALE
+SMALL_BODY = 80.0
+SMALL_BODY_UPSCALE = 120.0
 # Lado (px) da 1ª passada, que só mede o tamanho das peças
 FIRST_PASS_SIDE = 1200.0
 # Cor pesa mais que luz: reflexos mudam a luminância, peças mudam a cor
@@ -47,6 +52,8 @@ WRONG_WAY_L_WEIGHT = 0.3
 # Diferença máxima de tom (a, b ponderados) para um escurecimento numa mesa clara contar como sombra
 SHADOW_MAX_AB = 8.0
 SHADOW_L_WEIGHT = 0.15
+# Sombra escurece até esta fração da luz do fundo (nas fotos reais: ~0,85); abaixo disso é peça
+SHADOW_MIN_RATIO = 0.55
 
 
 def _lab_dist(a, b):
@@ -54,9 +61,9 @@ def _lab_dist(a, b):
     dl = a[..., 0] - b[..., 0]
     ab2 = ((a[..., 1] - b[..., 1]) * LAB_WEIGHTS[1]) ** 2 + ((a[..., 2] - b[..., 2]) * LAB_WEIGHTS[2]) ** 2
     light = b[..., 0] > LIGHT_TABLE_L
-    # Sombra numa mesa clara: escurece sem mudar o tom do fundo (a luz da sombra puxa um pouco o tom:
-    # pesa só metade)
-    shadow = light & (dl < 0) & (ab2 < SHADOW_MAX_AB ** 2)
+    # Sombra numa mesa clara: escurece um pouco, sem mudar o tom do fundo (a luz da sombra puxa um
+    # pouco o tom: pesa só metade). Peça cinza-escura escurece muito mais e não entra aqui
+    shadow = light & (dl < 0) & (a[..., 0] > SHADOW_MIN_RATIO * b[..., 0]) & (ab2 < SHADOW_MAX_AB ** 2)
     wrong = ((b[..., 0] < DARK_TABLE_L) & (dl < 0)) | (light & (dl > 0))
     wl = np.where(shadow, np.float32(SHADOW_L_WEIGHT), np.where(wrong, np.float32(WRONG_WAY_L_WEIGHT), np.float32(1.0)))
     return np.sqrt((dl * wl) ** 2 + ab2 * np.where(shadow, np.float32(0.25), np.float32(1.0)))
@@ -131,6 +138,73 @@ def _relabel(lab):
     return lut[lab]
 
 
+def _collinear_angle(mask):
+    """
+    Inclinação (graus, -45..45, sentido de getRotationMatrix2D) pela colinearidade: gira o contorno e
+    conta quantos pontos caem na mesma linha e na mesma coluna (soma dos quadrados dos histogramas).
+    Os lados retos do corpo se empilham em poucas linhas/colunas só no ângulo certo; abas e encaixes
+    são arcos e se espalham em qualquer ângulo. É uma transformada de Hough restrita a duas direções
+    perpendiculares.
+    """
+    cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0
+    p = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.float64)
+    if len(p) < 20:
+        return 0.0
+    p -= p.mean(0)
+
+    def best(ts):
+        # Todas as rotações de uma vez: um histograma por ângulo, num único bincount
+        a = np.radians(ts)[:, None]
+        x = p[:, 0] * np.cos(a) - p[:, 1] * np.sin(a)
+        y = p[:, 0] * np.sin(a) + p[:, 1] * np.cos(a)
+        scores = np.zeros(len(ts))
+        for v in (x, y):
+            b = np.round(v - v.min(1, keepdims=True)).astype(np.int64)
+            span = int(b.max()) + 1
+            h = np.bincount((b + np.arange(len(ts))[:, None] * span).ravel(), minlength=len(ts) * span)
+            scores += (h.reshape(len(ts), span).astype(np.float64) ** 2).sum(1)
+        return float(ts[int(np.argmax(scores))])
+
+    t0 = best(np.arange(-45.0, 45.0, 2.0))
+    t = best(np.arange(t0 - 2.0, t0 + 2.01, 0.25))
+    return ((t + 45.0) % 90.0) - 45.0
+
+
+def _corner_score(mask, angle):
+    """
+    Quão bem a máscara endireitada por `angle` tem os 4 cantos retos de um corpo de peça: cheia logo
+    por dentro de cada canto e vazia logo por fora, na diagonal (abas e encaixes ficam no meio dos lados).
+    """
+    h, w = mask.shape
+    m = mask.astype(np.uint8)
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, 1.0)
+    side = int(np.ceil(np.hypot(h, w)))
+    M[0, 2] += (side - w) / 2
+    M[1, 2] += (side - h) / 2
+    r = cv2.warpAffine(m, M, (side, side), flags=cv2.INTER_NEAREST) > 0
+    ys, xs = np.nonzero(r)
+    if len(xs) < 50:
+        return 0.0
+    cx, cy, half = xs.mean(), ys.mean(), 0.5 * np.sqrt(len(xs))
+    d = max(2, int(round(0.12 * half)))
+    score = 0.0
+    for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+        # Canto do corpo: o ponto mais avançado da máscara na direção diagonal, perto do canto esperado
+        x0, y0 = int(round(cx + sx * half)), int(round(cy + sy * half))
+        win = r[max(0, y0 - 2 * d):y0 + 2 * d + 1, max(0, x0 - 2 * d):x0 + 2 * d + 1]
+        if not win.any():
+            continue
+        wy, wx = np.nonzero(win)
+        far = np.argmax(wx * sx + wy * sy)
+        px, py = max(0, x0 - 2 * d) + wx[far], max(0, y0 - 2 * d) + wy[far]
+        inside = r[min(py, py - sy * d):max(py, py - sy * d) + 1, min(px, px - sx * d):max(px, px - sx * d) + 1]
+        outside = r[min(py + sy, py + sy * d):max(py + sy, py + sy * d) + 1, min(px + sx, px + sx * d):max(px + sx, px + sx * d) + 1]
+        score += (inside.mean() if inside.size else 0.0) - (outside.mean() if outside.size else 0.0)
+    return score / 4
+
+
 def _rotate(img, code):
     return img if code is None else cv2.rotate(img, code)
 
@@ -181,10 +255,10 @@ class PuzzleEngine:
         dt_all = cv2.distanceTransform(fg, cv2.DIST_L2, 5)
 
         # Um miolo por peça: a região bem dentro do corpo (dt > 0,75 r). Uma peça com dois encaixes
-        # opostos pode ter o miolo partido na "cintura"; partes a menos de ~1 r umas das outras são
+        # opostos pode ter o miolo partido na "cintura"; partes a menos de ~0,8 r umas das outras são
         # a mesma peça (miolos de peças vizinhas ficam a ≥ 1,5 r)
         strong = (dt_all > 0.75 * radius).astype(np.uint8)
-        g = int(max(3, round(1.0 * radius))) | 1
+        g = int(max(3, round(0.8 * radius))) | 1
         merged = cv2.dilate(strong, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))) & (fg > 0)
         n_m, merged_lab = cv2.connectedComponents(merged.astype(np.uint8))
         _, strong_lab = cv2.connectedComponents(strong)
@@ -235,6 +309,11 @@ class PuzzleEngine:
             if not (min_area < area < max_area):
                 continue
             mask = (cc[y:y + bh, x:x + bw] == i).astype(np.uint8) * 255
+            # Borda serrilhada (ruído/JPEG) engana a inclinação e o formato dos lados: suaviza na
+            # escala da peça (contornos de aba e encaixe são bem maiores que isso)
+            sig = max(1.0, MASK_SMOOTH * np.sqrt(area))
+            mask = ((cv2.GaussianBlur(mask, (0, 0), sig) > 127) & (mask > 0)).astype(np.uint8) * 255 \
+                if area > 400 else mask
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             if not cnts:
                 continue
@@ -295,6 +374,25 @@ class PuzzleEngine:
         return self._deskew(img, m, max(cnts, key=cv2.contourArea))
 
     def _body_angle(self, mask):
+        """
+        Inclinação do corpo da peça (graus, -45..45, mesmo sentido de getRotationMatrix2D).
+        Peça grande: direção do gradiente da máscara (_gradient_angle, erro ~0,1°). Peça pequena
+        (corpo < SMALL_BODY px, comum na foto da mesa inteira): o serrilhado engana o gradiente e as
+        abas pesam demais; usa o ângulo em que os trechos retos do contorno ficam COLINEARES (os dois
+        pedaços de cada lado do corpo, um de cada lado da aba), numa máscara ampliada e suavizada.
+        """
+        m = (mask > 127).astype(np.float32)
+        body = float(np.sqrt(m.sum()))
+        if body >= SMALL_BODY or body < 6:
+            return self._gradient_angle(mask)
+        s = SMALL_BODY_UPSCALE / body
+        up = cv2.resize(cv2.GaussianBlur(m, (0, 0), 0.8), None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC) > 0.5
+        # Os dois métodos erram em peças diferentes (abas grandes, contorno serrilhado): fica o ângulo
+        # que deixa os 4 cantos retos do corpo mais nítidos
+        cands = [_collinear_angle(up), self._gradient_angle(up.astype(np.uint8) * 255)]
+        return max(cands, key=lambda a: _corner_score(up, a))
+
+    def _gradient_angle(self, mask):
         """
         Inclinação do corpo da peça (graus, -45..45, mesmo sentido de getRotationMatrix2D).
         Histograma (módulo 90°) da direção do gradiente da máscara suavizada, pesado pela intensidade:
