@@ -161,6 +161,14 @@ def piece_location(photos, piece):
     return photo.bbox_to_original(piece["bbox"]), [int(round(cx)), int(round(cy))]
 
 
+def piece_thumb(piece):
+    """Miniatura JPEG (base64) da peça endireitada, com o fundo da foto em volta."""
+    img = piece["upright"] if piece.get("upright") is not None else piece["crop"]
+    s = LOCATE_THUMB / float(max(img.shape[:2]))
+    img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    return cv2_to_base64_jpeg(img, quality=80)
+
+
 def photos_summary(photos):
     return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "white_ref": p.white_ref,
              "pieces": p.pieces} for p in photos]
@@ -336,9 +344,6 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
         if not cands:
             continue
         bbox, centroid = piece_location(photos, p)
-        thumb = p["upright"] if p.get("upright") is not None else p["crop"]
-        s = LOCATE_THUMB / float(max(thumb.shape[:2]))
-        thumb = cv2.resize(thumb, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
         shapes = grid_engine.side_shapes(p.get("upright_mask"))
         out.append({
             "id": i,
@@ -346,7 +351,7 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
             "bbox": bbox,
             "centroid": centroid,
             # Peça endireitada (é ela que a rotação dos candidatos gira)
-            "thumb_base64": cv2_to_base64_jpeg(thumb, quality=80),
+            "thumb_base64": piece_thumb(p),
             "sides": shapes,
             "candidates": [{
                 "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
@@ -427,6 +432,8 @@ def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
             "score": round(c["score"] * 100, 1),
             "edge_ok": c["flats_ok"],
             "shape_ok": c["shape_ok"],
+            # Peça endireitada: a tela de comparação gira esta imagem por rotation_deg
+            "thumb_base64": piece_thumb(c["piece"]),
         })
     best_photo = ranked[0]["piece"]["photo"]
     result = {

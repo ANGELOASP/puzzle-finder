@@ -1110,8 +1110,9 @@ function renderTablePhotos() {
     show(tablePlaceholder, 'md:flex');
   }
   tableInputText.textContent = n ? 'Mais uma foto' : 'Tirar foto';
-  btnFindText.textContent = n > 1 ? `Encontrar peça nas ${n} fotos` : 'Encontrar peça nas fotos';
+  btnFindText.textContent = n > 1 ? `Procurar nas ${n} fotos` : 'Procurar nas fotos';
   checkReady();
+  Workspace.onPhotosChanged();
 }
 
 // Lado máximo da foto da mesa: com centenas de peças, cada uma precisa de pixels suficientes
@@ -1302,6 +1303,13 @@ btnFind.addEventListener('click', async () => {
     setServiceStatus('api', 'ok', 'Online');
     hide(apiNotice, 'flex');
 
+    // Mapa: as candidatas abrem direto na tela de comparar e confirmar
+    if (byCell) {
+      Workspace.openFindResults(data, { ...grid.cell });
+      if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
+      return;
+    }
+
     document.getElementById('pieceCrop').src = `data:image/jpeg;base64,${data.piece_crop_base64}`;
     renderResultPhotos(data);
     hide(candidateList);
@@ -1360,6 +1368,23 @@ btnFind.addEventListener('click', async () => {
   }
 });
 
+// Registra a peça encontrada no histórico (e, no mapa, marca a célula como montada)
+async function registerFound({ cell = null, rotation = 0, shapeSimilarity = null } = {}) {
+  const record = {
+    puzzle_id: currentPuzzle.id,
+    piece_number: currentFoundCount + 1,
+    rotation_deg: rotation || 0,
+    shape_similarity: shapeSimilarity,
+  };
+  if (cell) record.cell_index = cell.row * currentPuzzle.cols + cell.col;
+  const { error } = await supabaseClient.from('found_pieces').insert([record]);
+  if (error) throw error;
+  if (cell && gridActive()) await setCellState(cell, '1');
+  currentFoundCount += 1;
+  updateProgressBar();
+  if (navigator.vibrate) navigator.vibrate(50);
+}
+
 // Registrar Peça Encontrada no Histórico do Supabase
 btnConfirmFound.addEventListener('click', async () => {
   if (!currentPuzzle || !supabaseClient) {
@@ -1372,28 +1397,13 @@ btnConfirmFound.addEventListener('click', async () => {
   try {
     btnConfirmFound.disabled = true;
     btnConfirmFoundText.textContent = 'Salvando…';
-
-    const cell = lastFoundResult && lastFoundResult.cell;
-    const record = {
-      puzzle_id: currentPuzzle.id,
-      piece_number: currentFoundCount + 1,
-      rotation_deg: lastFoundResult ? lastFoundResult.rotation_deg : 0,
-      shape_similarity: lastFoundResult ? lastFoundResult.shape_similarity : null
-    };
-    if (cell) record.cell_index = cell.row * currentPuzzle.cols + cell.col;
-    const { error } = await supabaseClient.from('found_pieces').insert([record]);
-
-    if (error) throw error;
-
-    // Mapa: a célula passa a contar como montada
-    if (cell && gridActive()) await setCellState(cell, '1');
-
-    currentFoundCount += 1;
-    updateProgressBar();
+    await registerFound({
+      cell: lastFoundResult && lastFoundResult.cell,
+      rotation: lastFoundResult ? lastFoundResult.rotation_deg : 0,
+      shapeSimilarity: lastFoundResult ? lastFoundResult.shape_similarity : null,
+    });
     // Fica desabilitado até a próxima busca para não registrar a mesma peça duas vezes
     btnConfirmFoundText.textContent = 'Registrada';
-    if (navigator.vibrate) navigator.vibrate(50);
-
   } catch (err) {
     notify(`Erro ao registrar peça: ${err.message}`, 'error');
     btnConfirmFoundText.textContent = 'Encaixei! Registrar';
@@ -1458,7 +1468,8 @@ const mapViewer = new InteractiveImageViewer({
   coordBadge: null,
   onSelect: (nx, ny) => {
     const { cols, rows } = currentPuzzle;
-    selectCell(Math.min(cols - 1, Math.floor(nx * cols)), Math.min(rows - 1, Math.floor(ny * rows)));
+    const col = Math.min(cols - 1, Math.floor(nx * cols)), row = Math.min(rows - 1, Math.floor(ny * rows));
+    if (!Workspace.onMapTap(col, row)) selectCell(col, row);
   }
 });
 
@@ -1466,6 +1477,7 @@ function exitGridMode() {
   grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = null;
   hide(gridCard);
   show(legacyTarget, 'grid');
+  Workspace.onGridMode(false);
   hide(candidateList);
   step1Text.textContent = 'Escolha a peça que falta';
   step1Sub.textContent = 'tocando na imagem da caixa';
@@ -1475,6 +1487,7 @@ function exitGridMode() {
 async function enterGridMode(puzzle, boxImageBlob) {
   hide(legacyTarget, 'grid');
   show(gridCard);
+  Workspace.onGridMode(true);
   step1Text.textContent = 'Escolha a peça que falta';
   step1Sub.textContent = 'no mapa ou pelo número';
   cellNumber.max = String(puzzle.cols * puzzle.rows);
@@ -1482,6 +1495,7 @@ async function enterGridMode(puzzle, boxImageBlob) {
   grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 3000);
   if (currentPuzzle !== puzzle) return;
   updateGridCounts();
+  Workspace.refresh({ autoOpen: true });
   if (Array.isArray(puzzle.box_corners) && puzzle.box_corners.length === 4) {
     await buildArt();
   } else {
@@ -1504,6 +1518,7 @@ async function buildArt() {
   await renderMapImage(true);
   if (grid.cell) selectCell(grid.cell.col, grid.cell.row);
   checkReady();
+  Workspace.refresh({ autoOpen: true });
 }
 
 async function renderMapImage(resetZoom = false) {
@@ -1521,11 +1536,12 @@ function updateGridCounts() {
   const total = p.cols * p.rows;
   if (grid.scanMap) {
     const placed = countPlaced(grid.scanMap);
-    gridCounts.textContent = `Montadas ${placed} · Faltam ${total - placed}`;
+    gridCounts.textContent = `${placed} montadas · ${total - placed} faltam`;
   } else {
-    gridCounts.textContent = `${total} peças · ainda não escaneado`;
+    gridCounts.textContent = `${total} peças · não escaneado`;
   }
   updateProgressBar();
+  Workspace.refresh();
 }
 
 function cellState(cell) {
@@ -1680,6 +1696,7 @@ for (const input of [scanInput, scanInputGallery]) {
       grid.scanMap = data.placed_map;
       grid.board = { img, corners: res.corners };
       grid.hole = null;
+      Workspace.onScanned();
       scanOverlay.src = `data:image/jpeg;base64,${data.overlay_base64}`;
       show(scanDetails);
       updateGridCounts();
