@@ -1,4 +1,4 @@
-import base64, hashlib, json, os, threading, time, urllib.error, urllib.request
+import base64, gc, hashlib, json, os, threading, time, urllib.error, urllib.request
 import cv2, numpy as np
 from typing import List, Optional
 from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPException
@@ -10,12 +10,35 @@ from puzzle_engine import PuzzleEngine
 
 # A foto da mesa vai em alta resolução (centenas de peças pequenas): até ~3000 px ≈ 2-5 MB
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
-# Lado máximo processado da foto da mesa: mais que isso estoura a memória do plano gratuito
-MAX_TABLE_SIDE = 3000
-# Fotos de peças por busca (ex.: uma folha A4 cheia por foto)
-MAX_TABLE_PHOTOS = 8
+# Lado máximo processado da foto da mesa. O plano gratuito do Render tem 512 MB e o servidor era
+# reiniciado por falta de memória (OOM) com fotos de 3000 px: a 2000 px o pico cai de ~470 para ~260 MB
+# por foto e o resultado praticamente não muda (a peça tem ~120 px, e a busca usa 16×16)
+MAX_TABLE_SIDE = int(os.environ.get("MAX_TABLE_SIDE", "2000"))
+# Fotos de peças por busca (ex.: uma folha A4 cheia por foto). O app manda em lotes de PHOTOS_PER_REQUEST
+MAX_TABLE_PHOTOS = int(os.environ.get("MAX_TABLE_PHOTOS", "4"))
 # Lado (px) da miniatura de cada peça na busca inversa
 LOCATE_THUMB = 120
+
+def release_memory():
+    """Devolve ao sistema a memória que o Python liberou (o pico das fotos grandes ficaria retido)."""
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # fora do Linux/glibc: segue sem
+
+
+def heavy(fn):
+    """Roda a análise e libera a memória no fim, mesmo se der erro."""
+    def run(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            release_memory()
+    run.__name__ = fn.__name__
+    return run
+
 
 app = FastAPI(title="PuzzleFinder API")
 app.add_middleware(
@@ -229,7 +252,7 @@ async def find_piece(
 
     # OpenCV é CPU-bound: roda fora do event loop para não travar outras requisições
     return await run_in_threadpool(
-        process_find_piece, tables, box_bytes, board_bytes,
+        heavy(process_find_piece), tables, box_bytes, board_bytes,
         target_x_ratio, target_y_ratio, board_x_ratio, board_y_ratio, total_pieces, annotate,
     )
 
@@ -310,7 +333,7 @@ async def scan_board(
     if box_bytes is None or board_bytes is None:
         raise HTTPException(status_code=400, detail="Envie a arte e a foto do tabuleiro.")
     points = parse_points(mat_points)
-    return await run_in_threadpool(process_scan, box_bytes, board_bytes, cols, rows, max(0.0, min(3.0, margin)), points)
+    return await run_in_threadpool(heavy(process_scan), box_bytes, board_bytes, cols, rows, max(0.0, min(3.0, margin)), points)
 
 def process_scan(box_bytes, board_bytes, cols, rows, margin, points):
     box = img_bytes_to_cv2(box_bytes)
@@ -361,7 +384,7 @@ async def locate_pieces(
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
     pairs = parse_calib(calib, cols, rows)
-    return await run_in_threadpool(process_locate_pieces, tables, box_bytes, cols, rows, scan_map, piece_mm,
+    return await run_in_threadpool(heavy(process_locate_pieces), tables, box_bytes, cols, rows, scan_map, piece_mm,
                                    max(1, min(10, top_k)), pairs)
 
 def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top_k, pairs=None):
@@ -439,7 +462,7 @@ async def find_cell(
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
     pairs = parse_calib(calib, cols, rows)
-    return await run_in_threadpool(process_find_cell, tables, box_bytes, cols, rows, col, row,
+    return await run_in_threadpool(heavy(process_find_cell), tables, box_bytes, cols, rows, col, row,
                                    max(1, min(10, top_k)), annotate, hole_bytes, scan_map, piece_mm, pairs)
 
 def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,

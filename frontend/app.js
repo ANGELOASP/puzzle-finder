@@ -1038,8 +1038,26 @@ const tablePhotos = [];
 // Fotos das peças por sessão. O servidor analisa até PHOTOS_PER_REQUEST por vez (memória do plano
 // gratuito): o app manda em lotes e junta os resultados
 const MAX_TABLE_PHOTOS = 40;
-const PHOTOS_PER_REQUEST = 6;
+// O servidor gratuito tem 512 MB: 3 fotos de 2000 px por vez usam ~350 MB (6 fotos de 3000 px passavam de 780 MB
+// e o servidor era reiniciado: "Failed to fetch")
+const PHOTOS_PER_REQUEST = 3;
 document.getElementById('tablePhotosMax').textContent = String(MAX_TABLE_PHOTOS);
+
+// Conexão caída no meio (servidor reiniciando ou acordando): espera o servidor voltar e tenta mais uma vez
+async function fetchWithRetry(url, options, timeoutMs) {
+  try {
+    return await fetchWithTimeout(url, options, timeoutMs);
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    try {
+      await fetchWithTimeout(`${getApiUrl()}/healthz`, {}, 75000);
+      return await fetchWithTimeout(url, options, timeoutMs);
+    } catch (err2) {
+      if (err2.name === 'AbortError') throw err2;
+      throw new Error('O servidor de análise não respondeu. Ele pode ter reiniciado: tente de novo, com menos fotos de uma vez se continuar.');
+    }
+  }
+}
 
 // Envia as fotos em lotes, um depois do outro. Devolve [{ offset, data }] dos lotes que deram certo;
 // lote sem peça aproveitável (404) é pulado, os outros erros param tudo.
@@ -1049,7 +1067,7 @@ async function postPhotosInBatches(path, blobs, buildForm, { timeoutMs = 120000,
   for (let start = 0; start < blobs.length; start += PHOTOS_PER_REQUEST) {
     const chunk = blobs.slice(start, start + PHOTOS_PER_REQUEST);
     if (onBatch) onBatch(start, start + chunk.length, blobs.length);
-    const res = await fetchWithTimeout(`${getApiUrl()}${path}`, {
+    const res = await fetchWithRetry(`${getApiUrl()}${path}`, {
       method: 'POST', headers: await authHeaders(), body: await buildForm(chunk),
     }, timeoutMs);
     if (res.status === 404 && blobs.length > PHOTOS_PER_REQUEST) {
@@ -1275,7 +1293,8 @@ function renderTablePhotos() {
 }
 
 // Lado máximo da foto da mesa: com centenas de peças, cada uma precisa de pixels suficientes
-const TABLE_MAX_SIDE = 3000;
+// 2000 px: a peça fica com ~120 px, o servidor já trabalha nesse tamanho e o envio sai ~2× mais leve
+const TABLE_MAX_SIDE = 2000;
 
 function hasTarget() {
   return gridActive() ? Boolean(grid.cell) : Boolean(boxBlob && hasSelectedBox);
