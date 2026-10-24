@@ -6,6 +6,8 @@ O frontend endireita (perspectiva) as fotos com os 4 cantos marcados pelo usuár
   - board_rect: o tabuleiro retificado com uma faixa extra de `margin` células em volta
     (a mesa/feltro ao redor), usada para aprender a cor do fundo vazio.
 """
+import base64
+
 import cv2
 import numpy as np
 
@@ -542,7 +544,19 @@ def _color_similarity(h1, h2):
     return 1.0 - float(cv2.compareHist(h1, h2, cv2.HISTCMP_BHATTACHARYYA))
 
 
-class ColorNormalizer:
+class LabAffine:
+    """Transformação afim de cor em Lab (uint8 → uint8): x ↦ A·x + c."""
+
+    def __init__(self, a, c):
+        self.a = np.asarray(a, np.float32)
+        self.c = np.asarray(c, np.float32)
+
+    def __call__(self, lab_u8):
+        x = lab_u8.reshape(-1, 3).astype(np.float32)
+        return np.clip(x @ self.a.T + self.c, 0, 255).astype(np.uint8).reshape(lab_u8.shape)
+
+
+class ColorNormalizer(LabAffine):
     """
     Leva as cores das fotos das peças para as da caixa: transferência linear de Monge-Kantorovich em
     Lab — iguala média E covariância (não só o desvio de cada canal, como Reinhard), então corrige
@@ -565,11 +579,7 @@ class ColorNormalizer:
         # Limita o quanto um eixo pode esticar/encolher (amostra pequena ou cores muito diferentes)
         w, v = np.linalg.eigh((t + t.T) / 2)
         self.t = (v @ np.diag(np.clip(w, 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)) @ v.T).astype(np.float32)
-
-    def __call__(self, lab_u8):
-        x = lab_u8.reshape(-1, 3).astype(np.float32) - self.ms.astype(np.float32)
-        out = x @ self.t.T + self.mt.astype(np.float32)
-        return np.clip(out, 0, 255).astype(np.uint8).reshape(lab_u8.shape)
+        super().__init__(self.t, self.mt - self.t.astype(np.float64) @ self.ms)
 
 
 def _sqrtm(c):
@@ -809,6 +819,87 @@ def _rev_piece_desc(piece, color_tf=None):
     d = cv2.warpAffine(lab.astype(np.float32), M, (REV_GRID, REV_GRID), flags=cv2.INTER_AREA)
     wt = cv2.warpAffine(w, M, (REV_GRID, REV_GRID), flags=cv2.INTER_AREA)
     return (d, wt) if wt.sum() > 1 else None
+
+
+def piece_signature(piece):
+    """
+    Assinatura de cor da peça endireitada, ANTES da correção de cor: o descritor 16×16 em Lab e o peso
+    da máscara, em base64 (1 KB). O app guarda a das peças confirmadas para calibrar a cor depois.
+    """
+    desc = _rev_piece_desc(piece)
+    if desc is None:
+        return None
+    d, w = desc
+    arr = np.dstack([np.clip(d, 0, 255), np.clip(w * 255, 0, 255)]).round().astype(np.uint8)
+    return base64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def parse_signature(sig):
+    """(descritor Lab float32 G×G×3, peso G×G) ou None se a assinatura não for válida."""
+    try:
+        raw = base64.b64decode(sig, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(raw) != REV_GRID * REV_GRID * 4:
+        return None
+    arr = np.frombuffer(raw, np.uint8).reshape(REV_GRID, REV_GRID, 4)
+    return arr[..., :3].astype(np.float32), arr[..., 3].astype(np.float32) / 255.0
+
+
+# Aprendizado com as confirmações: peso das peças confirmadas na correção de cor = k / (k + CALIB_K0)
+CALIB_K0 = 3
+
+
+def _mkl(ms, cs, mt, ct, lam):
+    """Transferência MKL entre duas distribuições (médias e covariâncias), com encolhimento para a diagonal."""
+    cs = (1 - lam) * cs + lam * np.diag(np.diag(cs))
+    ct = (1 - lam) * ct + lam * np.diag(np.diag(ct))
+    rs = _sqrtm(cs)
+    rs_inv = np.linalg.inv(rs)
+    t = rs_inv @ _sqrtm(rs @ ct @ rs) @ rs_inv
+    w, v = np.linalg.eigh((t + t.T) / 2)
+    t = v @ np.diag(np.clip(w, 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)) @ v.T
+    return t, mt - t @ ms
+
+
+def _wstats(x, w):
+    w = w / max(w.sum(), 1e-9)
+    m = (x * w[:, None]).sum(0)
+    xc = x - m
+    return m, (xc * w[:, None]).T @ xc
+
+
+def calibrated_normalizer(base_tf, box_rect, cols, rows, pairs):
+    """
+    Correção de cor aprendida com as peças que o usuário confirmou: para cada par sabemos a peça
+    (assinatura 16×16 antes da correção) e a arte exata da célula, já no mesmo giro. Isso tira a
+    adivinhação do normalizador automático (que só sabe "as células que faltam"). Com poucas
+    confirmações o resultado é misturado ao automático: peso k / (k + CALIB_K0).
+    Devolve (transformação, nº de pares usados).
+    """
+    if not pairs:
+        return base_tf, 0
+    cells = _rev_cell_descs(box_rect, cols, rows)
+    xs, ys, ws = [], [], []
+    for p in pairs:
+        d, w = p["desc"]
+        k = p["rotation"] // 90
+        xs.append(np.rot90(d, -k).reshape(-1, 3))
+        ws.append(np.rot90(w, -k).reshape(-1))
+        ys.append(cells[p["row"], p["col"]].reshape(-1, 3))
+    x = np.concatenate(xs).astype(np.float64)
+    y = np.concatenate(ys).astype(np.float64)
+    w = np.concatenate(ws).astype(np.float64)
+    if w.sum() < 1:
+        return base_tf, 0
+    n = len(pairs)
+    ms, cs = _wstats(x, w)
+    mt, ct = _wstats(y, w)
+    t, c = _mkl(ms, cs, mt, ct, COLOR_SHRINK_PIECES / (COLOR_SHRINK_PIECES + n))
+    if base_tf is None:
+        return LabAffine(t, c), n
+    a = n / (n + CALIB_K0)
+    return LabAffine(a * t + (1 - a) * base_tf.a, a * c + (1 - a) * base_tf.c), n
 
 
 def locate_pieces(box_rect, cols, rows, pieces, scan_map=None, color_tf=None, top_k=5):

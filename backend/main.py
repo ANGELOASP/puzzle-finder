@@ -161,6 +161,34 @@ def piece_location(photos, piece):
     return photo.bbox_to_original(piece["bbox"]), [int(round(cx)), int(round(cy))]
 
 
+# Pares peça ↔ célula confirmados que o app manda para calibrar a cor (os mais recentes valem)
+CALIB_MAX = 80
+
+
+def parse_calib(calib, cols, rows):
+    """Lista de dict(col, row, rotation, desc) a partir do JSON do app; entradas inválidas são ignoradas."""
+    if not calib:
+        return []
+    try:
+        items = json.loads(calib)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Calibração de cor inválida.")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="Calibração de cor inválida.")
+    out = []
+    for it in items[-CALIB_MAX:]:
+        if not isinstance(it, dict):
+            continue
+        col, row, rot, sig = it.get("col"), it.get("row"), it.get("rotation"), it.get("sig")
+        if not (isinstance(col, int) and isinstance(row, int) and 0 <= col < cols and 0 <= row < rows
+                and rot in (0, 90, 180, 270) and isinstance(sig, str)):
+            continue
+        desc = grid_engine.parse_signature(sig)
+        if desc is not None:
+            out.append({"col": col, "row": row, "rotation": rot, "desc": desc})
+    return out
+
+
 def piece_thumb(piece):
     """Miniatura JPEG (base64) da peça endireitada, com o fundo da foto em volta."""
     img = piece["upright"] if piece.get("upright") is not None else piece["crop"]
@@ -318,6 +346,7 @@ async def locate_pieces(
     scan_map: Optional[str] = Form(None),
     piece_mm: Optional[float] = Form(None),
     top_k: int = Form(5),
+    calib: Optional[str] = Form(None),
     user_id: Optional[str] = Depends(require_user),
 ):
     """
@@ -331,13 +360,15 @@ async def locate_pieces(
         raise HTTPException(status_code=400, detail="Envie a arte.")
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
+    pairs = parse_calib(calib, cols, rows)
     return await run_in_threadpool(process_locate_pieces, tables, box_bytes, cols, rows, scan_map, piece_mm,
-                                   max(1, min(10, top_k)))
+                                   max(1, min(10, top_k)), pairs)
 
-def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top_k):
+def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top_k, pairs=None):
     box = img_bytes_to_cv2(box_bytes)
     photos, pieces = segment_tables(tables, piece_mm)
     color_tf = grid_engine.color_normalizer(pieces, box, cols, rows, scan_map)
+    color_tf, calib_used = grid_engine.calibrated_normalizer(color_tf, box, cols, rows, pairs)
     located = grid_engine.locate_pieces(box, cols, rows, pieces, scan_map, color_tf, top_k=top_k)
     out = []
     for i, (p, cands) in enumerate(zip(pieces, located)):
@@ -352,6 +383,8 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
             "centroid": centroid,
             # Peça endireitada (é ela que a rotação dos candidatos gira)
             "thumb_base64": piece_thumb(p),
+            # Assinatura de cor: o app guarda a das peças confirmadas e manda de volta em `calib`
+            "sig": grid_engine.piece_signature(p),
             "sides": shapes,
             "candidates": [{
                 "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
@@ -362,6 +395,7 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
     return {
         "pieces": out,
         "pieces_detected": len(pieces),
+        "calibration": {"pairs": calib_used},
         "photos": photos_summary(photos),
         "missing_cells": scan_map.count("0") if scan_map and len(scan_map) == cols * rows else cols * rows,
     }
@@ -381,6 +415,7 @@ async def find_cell(
     hole_file: Optional[UploadFile] = File(None),
     scan_map: Optional[str] = Form(None),
     piece_mm: Optional[float] = Form(None),
+    calib: Optional[str] = Form(None),
     user_id: Optional[str] = Depends(require_user),
 ):
     """
@@ -403,11 +438,12 @@ async def find_cell(
     hole_bytes = await read_upload(hole_file)
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
+    pairs = parse_calib(calib, cols, rows)
     return await run_in_threadpool(process_find_cell, tables, box_bytes, cols, rows, col, row,
-                                   max(1, min(10, top_k)), annotate, hole_bytes, scan_map, piece_mm)
+                                   max(1, min(10, top_k)), annotate, hole_bytes, scan_map, piece_mm, pairs)
 
 def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
-                      hole_bytes=None, scan_map=None, piece_mm=None):
+                      hole_bytes=None, scan_map=None, piece_mm=None, pairs=None):
     box = img_bytes_to_cv2(box_bytes)
     photos, pieces = segment_tables(tables, piece_mm)
     hole = None
@@ -415,6 +451,7 @@ def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
         hole = grid_engine.hole_shapes(img_bytes_to_cv2(hole_bytes), 3, 3, 0, 1, 1,
                                        flats=grid_engine.expected_flats(cols, rows, col, row))
     color_tf = grid_engine.color_normalizer(pieces, box, cols, rows, scan_map)
+    color_tf, calib_used = grid_engine.calibrated_normalizer(color_tf, box, cols, rows, pairs)
     patch = grid_engine.cell_patch(box, cols, rows, col, row)
     ranked = grid_engine.match_cell(patch, pieces, top_k=top_k, hole=hole, color_tf=color_tf)
     if not ranked:
@@ -434,6 +471,7 @@ def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
             "shape_ok": c["shape_ok"],
             # Peça endireitada: a tela de comparação gira esta imagem por rotation_deg
             "thumb_base64": piece_thumb(c["piece"]),
+            "sig": grid_engine.piece_signature(c["piece"]),
         })
     best_photo = ranked[0]["piece"]["photo"]
     result = {
@@ -442,6 +480,7 @@ def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
         # Tamanho da foto da melhor candidata (o scanner ao vivo usa para desenhar sobre o vídeo)
         "frame_size": list(photos[best_photo].original_size),
         "photos": photos_summary(photos),
+        "calibration": {"pairs": calib_used},
         "candidates": candidates,
         # Formato do buraco usado no filtro (lado → "tab"/"blank"/"flat"/None), ou None
         "hole": hole,

@@ -66,6 +66,7 @@ const Workspace = (() => {
     const count = Object.values(done).filter(Boolean).length;
     $('wizardProgress').textContent = count === 3 ? 'Pronto' : `${count} de 3`;
 
+    renderCalib();
     $('btnLocate').disabled = !(grid.art && n);
     $('btnLocateText').textContent = n ? `Localizar as peças ${n === 1 ? 'da foto' : `das ${n} fotos`}` : 'Localizar as peças das fotos';
     if (autoOpen) openStep(firstTodo);
@@ -148,6 +149,8 @@ const Workspace = (() => {
       form.append('rows', p.rows);
       form.append('top_k', '5');
       if (grid.scanMap) form.append('scan_map', grid.scanMap);
+      const calib = calibPayload();
+      if (calib.length) form.append('calib', JSON.stringify(calib));
       if (p.width_cm > 0) form.append('piece_mm', String((p.width_cm * 10) / p.cols));
       if (apiWakeup) await apiWakeup;
       const res = await fetchWithTimeout(`${getApiUrl()}/api/locate-pieces`, { method: 'POST', headers: await authHeaders(), body: form }, 240000);
@@ -156,6 +159,9 @@ const Workspace = (() => {
       state.locatedFor = photosSignature();
       state.rejected.clear();
       state.placedPieces.clear();
+      // Peça já confirmada que continua nas fotos: mesma assinatura → já está encaixada
+      const confirmedSigs = new Set(calibLoad().map((p) => p.sig));
+      for (const piece of state.located.pieces) if (piece.sig && confirmedSigs.has(piece.sig)) state.placedPieces.add(piece.id);
       setServiceStatus('api', 'ok', 'Online');
       $('locateIntro').textContent = 'Toque numa peça (ou numa marca do mapa) para comparar com a caixa e confirmar.';
       renderLocate();
@@ -341,6 +347,49 @@ const Workspace = (() => {
     return true;
   }
 
+  // ---------- Aprendizado: cada peça confirmada ensina a diferença de cor entre fotos e caixa ----------
+  // Guarda a assinatura de cor da peça (vinda do servidor) com a célula e o giro confirmados;
+  // as buscas seguintes mandam esses pares e o servidor calibra a cor por eles.
+  const CALIB_MAX = 60;
+  const calibKey = () => `pf_calib_${currentPuzzle.id}`;
+
+  function calibLoad() {
+    if (!currentPuzzle) return [];
+    try {
+      const v = JSON.parse(localStorage.getItem(calibKey()) || '[]');
+      return Array.isArray(v) ? v : [];
+    } catch (_) { return []; }
+  }
+
+  function calibSave(list) {
+    try { localStorage.setItem(calibKey(), JSON.stringify(list.slice(-CALIB_MAX))); } catch (_) { /* sem espaço: segue sem aprender */ }
+    renderCalib();
+  }
+
+  function calibAdd(sig, cell, rotation) {
+    if (!sig || !currentPuzzle) return;
+    const list = calibLoad().filter((p) => !(p.col === cell.col && p.row === cell.row));
+    list.push({ sig, col: cell.col, row: cell.row, rotation });
+    calibSave(list);
+  }
+
+  function calibPayload() {
+    return currentPuzzle && isGridPuzzle(currentPuzzle) ? calibLoad() : [];
+  }
+
+  function renderCalib() {
+    const n = calibPayload().length;
+    $('calibInfo').classList.toggle('hidden', !n);
+    $('calibText').textContent = n === 1 ? 'A cor já é ajustada por 1 peça que você confirmou.'
+      : `A cor já é ajustada por ${n} peças que você confirmou.`;
+  }
+
+  $('btnCalibReset').addEventListener('click', () => {
+    try { localStorage.removeItem(calibKey()); } catch (_) {}
+    renderCalib();
+    notify('Ajuste de cor esquecido. As próximas confirmações recomeçam o aprendizado.', 'info');
+  });
+
   // ---------- Comparar e confirmar ----------
   const dlg = $('compareDialog');
 
@@ -519,6 +568,7 @@ const Workspace = (() => {
     btn.disabled = true;
     try {
       await registerFound({ cell, rotation: item.rotation_deg });
+      calibAdd(c.kind === 'find' ? item.sig : c.piece.sig, cell, item.rotation_deg);
       if (c.kind === 'locate') state.placedPieces.add(c.piece.id);
       dlg.close();
       notify(`Peça nº ${Grid.cellNumber(cell.col, cell.row, currentPuzzle.cols)} encaixada.`, 'success');
@@ -532,5 +582,5 @@ const Workspace = (() => {
   });
 
   setMode('find');
-  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, get mode() { return state.mode; } };
+  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, get mode() { return state.mode; } };
 })();
