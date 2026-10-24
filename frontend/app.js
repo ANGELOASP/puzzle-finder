@@ -939,9 +939,14 @@ const boxViewer = new InteractiveImageViewer({
 const tableInput = document.getElementById('tableInput');
 const tableInputGallery = document.getElementById('tableInputGallery');
 const tableInputText = document.getElementById('tableInputText');
-const tablePreview = document.getElementById('tablePreview');
 const tableContainer = document.getElementById('tableContainer');
 const tablePlaceholder = document.getElementById('tablePlaceholder');
+const tablePhotosList = document.getElementById('tablePhotosList');
+const tablePhotosCount = document.getElementById('tablePhotosCount');
+const btnClearTablePhotos = document.getElementById('btnClearTablePhotos');
+const btnFindText = document.getElementById('btnFindText');
+const resultPhotoTabs = document.getElementById('resultPhotoTabs');
+const paperNotice = document.getElementById('paperNotice');
 
 const btnFind = document.getElementById('btnFind');
 const loading = document.getElementById('loading');
@@ -957,7 +962,10 @@ const checkTarget = document.getElementById('checkTarget');
 const checkTable = document.getElementById('checkTable');
 
 let boxBlob = null;
-let tableBlob = null;
+// Fotos das peças (uma folha A4 por foto): [{ blob, url }]
+const tablePhotos = [];
+// Mesmo limite do servidor
+const MAX_TABLE_PHOTOS = 8;
 let lastFoundResult = null;
 
 async function compressImage(file, maxDimension = 1600, quality = 0.85) {
@@ -1041,18 +1049,69 @@ for (const input of [boxInput, boxInputReplace]) {
   });
 }
 
-// Peças Soltas na Mesa (câmera ou galeria)
+// Fotos das peças (câmera: uma por vez; galeria: várias de uma vez), até MAX_TABLE_PHOTOS
 for (const input of [tableInput, tableInputGallery]) {
   input.addEventListener('change', async () => {
-    const blob = await readPickedImage(input, TABLE_MAX_SIDE, 0.9);
-    if (!blob) return;
-    tableBlob = blob;
-    setObjectUrl(tablePreview, blob);
+    const files = Array.from(input.files || []);
+    input.value = ''; // permite escolher o mesmo arquivo de novo
+    const room = MAX_TABLE_PHOTOS - tablePhotos.length;
+    if (files.length > room) {
+      notify(room > 0 ? `Dá para anexar até ${MAX_TABLE_PHOTOS} fotos: entraram só as ${room} primeiras.` : `Já são ${MAX_TABLE_PHOTOS} fotos. Remova alguma para anexar outra.`, 'info');
+    }
+    for (const file of files.slice(0, Math.max(0, room))) {
+      try {
+        const blob = await compressImage(file, TABLE_MAX_SIDE, 0.9);
+        tablePhotos.push({ blob, url: URL.createObjectURL(blob) });
+      } catch (err) {
+        notify(err.message, 'error');
+      }
+    }
+    renderTablePhotos();
+  });
+}
+
+btnClearTablePhotos.addEventListener('click', () => {
+  tablePhotos.splice(0).forEach(p => URL.revokeObjectURL(p.url));
+  renderTablePhotos();
+});
+
+function renderTablePhotos() {
+  tablePhotosList.innerHTML = '';
+  tablePhotos.forEach((photo, i) => {
+    const li = document.createElement('li');
+    li.className = 'relative aspect-[3/4] rounded-lg overflow-hidden ring-1 ring-inset ring-slate-700 bg-slate-950';
+    const img = document.createElement('img');
+    img.src = photo.url;
+    img.alt = `Foto ${i + 1} das peças`;
+    img.className = 'w-full h-full object-cover';
+    const tag = document.createElement('span');
+    tag.className = 'absolute left-1 top-1 px-1.5 rounded bg-black/70 text-[11px] font-bold text-slate-100';
+    tag.textContent = String(i + 1);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'absolute right-1 top-1 w-8 h-8 rounded-full bg-black/70 hover:bg-black text-slate-100 flex items-center justify-center';
+    del.setAttribute('aria-label', `Remover a foto ${i + 1}`);
+    del.innerHTML = '<svg class="icon w-4 h-4"><use href="#i-x"/></svg>';
+    del.addEventListener('click', () => {
+      URL.revokeObjectURL(photo.url);
+      tablePhotos.splice(i, 1);
+      renderTablePhotos();
+    });
+    li.append(img, tag, del);
+    tablePhotosList.appendChild(li);
+  });
+  const n = tablePhotos.length;
+  tablePhotosCount.textContent = n === 1 ? '1 foto' : `${n} fotos`;
+  if (n) {
     show(tableContainer, 'flex');
     hide(tablePlaceholder, 'md:flex');
-    tableInputText.textContent = 'Tirar outra';
-    checkReady();
-  });
+  } else {
+    hide(tableContainer, 'flex');
+    show(tablePlaceholder, 'md:flex');
+  }
+  tableInputText.textContent = n ? 'Mais uma foto' : 'Tirar foto';
+  btnFindText.textContent = n > 1 ? `Encontrar peça nas ${n} fotos` : 'Encontrar peça nas fotos';
+  checkReady();
 }
 
 // Lado máximo da foto da mesa: com centenas de peças, cada uma precisa de pixels suficientes
@@ -1071,14 +1130,18 @@ function setChecklistItem(li, done) {
 function checkReady() {
   const target = hasTarget();
   setChecklistItem(checkTarget, target);
-  setChecklistItem(checkTable, Boolean(tableBlob));
-  btnFind.disabled = !(target && tableBlob);
+  setChecklistItem(checkTable, tablePhotos.length > 0);
+  btnFind.disabled = !(target && tablePhotos.length);
 }
 
 // Monta a requisição com o que o usuário marcou (só envia o que tem marcação)
-function buildFindPieceForm(tableFileBlob, { annotate = true } = {}) {
+function appendTablePhotos(formData, blobs) {
+  blobs.forEach((b, i) => formData.append('table_files', b, `pecas-${i + 1}.jpg`));
+}
+
+function buildFindPieceForm(tableBlobs, { annotate = true } = {}) {
   const formData = new FormData();
-  formData.append('table_file', tableFileBlob, 'table.jpg');
+  appendTablePhotos(formData, tableBlobs);
 
   if (boxBlob && hasSelectedBox) {
     formData.append('box_file', boxBlob, 'box.jpg');
@@ -1111,9 +1174,9 @@ async function holeBlob() {
 }
 
 // Requisição da busca por célula do mapa
-async function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
+async function buildFindCellForm(tableBlobs, { annotate = true } = {}) {
   const formData = new FormData();
-  formData.append('table_file', tableFileBlob, 'table.jpg');
+  appendTablePhotos(formData, tableBlobs);
   formData.append('box_file', grid.artBlob, 'art.jpg');
   formData.append('cols', currentPuzzle.cols);
   formData.append('rows', currentPuzzle.rows);
@@ -1121,6 +1184,10 @@ async function buildFindCellForm(tableFileBlob, { annotate = true } = {}) {
   formData.append('row', grid.cell.row);
   formData.append('top_k', '5');
   formData.append('annotate', annotate ? 'true' : 'false');
+  // Largura de uma peça: com a folha A4 na foto, o servidor sabe o tamanho exato de cada peça
+  if (currentPuzzle.width_cm > 0) formData.append('piece_mm', String((currentPuzzle.width_cm * 10) / currentPuzzle.cols));
+  // As peças soltas são as que faltam: as cores dessas células da arte calibram as cores das fotos
+  if (grid.scanMap) formData.append('scan_map', grid.scanMap);
   try {
     const hole = await holeBlob();
     if (hole) formData.append('hole_file', hole, 'hole.jpg');
@@ -1150,7 +1217,7 @@ function renderCandidates(data) {
     text.className = 'min-w-0';
     const line1 = document.createElement('p');
     line1.className = 'text-sm font-semibold';
-    line1.textContent = rotationLabel(c.rotation_deg);
+    line1.textContent = rotationLabel(c.rotation_deg) + (tablePhotos.length > 1 && c.photo != null ? ` · foto ${c.photo + 1}` : '');
     const line2 = document.createElement('p');
     line2.className = 'text-xs text-slate-400';
     line2.textContent = `Semelhança ${Math.round(c.score)}%${c.edge_ok ? '' : ' · formato de borda não bate'}${c.shape_ok === false ? ' · abas/encaixes não batem com o buraco' : ''}`;
@@ -1161,9 +1228,49 @@ function renderCandidates(data) {
   show(candidateList);
 }
 
+// Foto(s) com as candidatas circuladas: com várias fotos, uma aba para cada foto que tem candidatas
+function renderResultPhotos(data) {
+  const highlighted = document.getElementById('highlightedTable');
+  const images = data.annotated_tables || [{ photo: data.photo || 0, image_base64: data.annotated_table_base64 }];
+  const multi = (data.photos || []).length > 1;
+  const showPhoto = (photo) => {
+    const im = images.find(x => x.photo === photo) || images[0];
+    highlighted.src = `data:image/jpeg;base64,${im.image_base64}`;
+    resultPhotoTabs.querySelectorAll('button').forEach(b => b.setAttribute('aria-selected', String(Number(b.dataset.photo) === im.photo)));
+  };
+  resultPhotoTabs.innerHTML = '';
+  if (multi && images.length > 1) {
+    images.forEach((im) => {
+      const n = (data.candidates || []).filter(c => c.photo === im.photo).map(c => c.rank);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'tab');
+      b.dataset.photo = String(im.photo);
+      b.className = 'h-9 px-3 rounded-lg bg-slate-950 ring-1 ring-inset ring-slate-700 text-xs font-semibold text-slate-200 aria-selected:ring-2 aria-selected:ring-emerald-400';
+      b.textContent = `Foto ${im.photo + 1}${n.length ? ` · nº ${n.join(', ')}` : ''}`;
+      b.addEventListener('click', () => showPhoto(im.photo));
+      resultPhotoTabs.appendChild(b);
+    });
+    show(resultPhotoTabs, 'flex');
+  } else {
+    hide(resultPhotoTabs, 'flex');
+  }
+  const best = data.candidates ? data.candidates[0].photo : (data.photo || 0);
+  showPhoto(best);
+  // Fotos sem a folha A4: a busca seguiu, mas sem escala nem branco de referência
+  const noPaper = (data.photos || []).map((p, i) => (p.on_paper ? null : i + 1)).filter(Boolean);
+  if (noPaper.length) {
+    paperNotice.textContent = (data.photos.length > 1 ? `Não achei a folha A4 inteira na foto ${noPaper.join(', ')}.` : 'Não achei a folha A4 inteira na foto.')
+      + ' A busca seguiu, mas com a folha toda visível ela fica mais precisa.';
+    show(paperNotice);
+  } else {
+    hide(paperNotice);
+  }
+}
+
 // Enviar Foto Manual para API
 btnFind.addEventListener('click', async () => {
-  if (!tableBlob || !hasTarget()) return;
+  if (!tablePhotos.length || !hasTarget()) return;
 
   btnFind.disabled = true;
   show(loading, 'flex');
@@ -1184,7 +1291,7 @@ btnFind.addEventListener('click', async () => {
     const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: byCell ? await buildFindCellForm(tableBlob) : buildFindPieceForm(tableBlob)
+      body: byCell ? await buildFindCellForm(tablePhotos.map(p => p.blob)) : buildFindPieceForm(tablePhotos.map(p => p.blob))
     }, 120000);
 
     if (!res.ok) {
@@ -1196,7 +1303,7 @@ btnFind.addEventListener('click', async () => {
     hide(apiNotice, 'flex');
 
     document.getElementById('pieceCrop').src = `data:image/jpeg;base64,${data.piece_crop_base64}`;
-    document.getElementById('highlightedTable').src = `data:image/jpeg;base64,${data.annotated_table_base64}`;
+    renderResultPhotos(data);
     hide(candidateList);
 
     if (byCell) {
@@ -1751,7 +1858,7 @@ async function scanFrame(session) {
     const res = await fetchWithTimeout(`${getApiUrl()}/api/${byCell ? 'find-cell' : 'find-piece'}`, {
       method: 'POST',
       headers: await authHeaders(),
-      body: byCell ? await buildFindCellForm(frameBlob, { annotate: false }) : buildFindPieceForm(frameBlob, { annotate: false })
+      body: byCell ? await buildFindCellForm([frameBlob], { annotate: false }) : buildFindPieceForm([frameBlob], { annotate: false })
     }, 60000);
 
     if (session !== scanSession) return;

@@ -35,6 +35,8 @@ NCC_NEUTRAL = 0.45
 MATCH_CELL = 64
 # Lado do corpo da peça ≈ k × raio do maior círculo inscrito na máscara (sem/ com encaixes fundos)
 BODY_FROM_RADIUS = (2.0, 2.3, 2.6, 3.0)
+# Com a escala da folha A4, o corpo é conhecido: testa só ±8% (corte e impressão variam um pouco)
+KNOWN_BODY_STEPS = (0.92, 1.0, 1.08)
 # O centro do corpo pode estar até esta fração de célula longe do centro da célula
 MATCH_REACH = 0.3
 MIN_TEXTURE_STD = 8.0
@@ -510,21 +512,83 @@ def _rotate_point(pt, w, h, deg):
     return (x, y)
 
 
-def _ab_hist(lab_u8, mask=None):
-    hist = cv2.calcHist([lab_u8], [1, 2], mask, [16, 16], [0, 256, 0, 256])
-    return cv2.normalize(hist, hist).flatten()
+def _lab_hist(lab_u8, mask=None):
+    """
+    Histograma Lab (luz em 4 faixas, cor em 16 × 16) suavizado entre bins vizinhos: uma pequena
+    diferença de tom entre as fotos cai no bin ao lado em vez de zerar a semelhança.
+    """
+    h = cv2.calcHist([lab_u8], [0, 1, 2], mask, list(HIST_BINS), [0, 256, 0, 256, 0, 256]).reshape(HIST_BINS)
+    for ax in (1, 2):
+        h = (h + np.roll(h, 1, ax) * 0.5 + np.roll(h, -1, ax) * 0.5) / 2.0
+    total = float(h.sum())
+    return (h / total).astype(np.float32).ravel() if total > 0 else h.astype(np.float32).ravel()
 
+
+def _color_similarity(h1, h2):
+    """1 − distância de Bhattacharyya (0..1)."""
+    return 1.0 - float(cv2.compareHist(h1, h2, cv2.HISTCMP_BHATTACHARYYA))
+
+
+class ColorNormalizer:
+    """
+    Leva as cores da foto da mesa para as da caixa (transferência de Reinhard em Lab): média e
+    desvio de cada canal das peças viram os da arte das células que elas devem preencher. Corrige o
+    que muda entre as duas fotos (luz quente, câmera, impressão mais saturada) — no bench com fotos
+    reais, a célula certa saiu da 80ª para a 1ª-3ª posição entre 201 pela cor.
+    """
+
+    def __init__(self, piece_px, art_px):
+        self.mb, self.ma = piece_px.mean(0), art_px.mean(0)
+        self.k = np.clip(art_px.std(0) / (piece_px.std(0) + 1e-6), 1 / COLOR_MAX_STRETCH, COLOR_MAX_STRETCH)
+
+    def __call__(self, lab_u8):
+        out = (lab_u8.astype(np.float32) - self.mb) * self.k + self.ma
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def color_normalizer(pieces, box_rect, cols, rows, scan_map=None):
+    """
+    Normalizador a partir das peças da(s) foto(s) e da arte. As peças soltas são as que faltam no
+    tabuleiro: com o mapa do escaneamento ('0' = falta), a referência é a arte só dessas células.
+    """
+    piece_px = []
+    rng = np.random.default_rng(0)
+    for p in pieces:
+        lab = cv2.cvtColor(p["crop"], cv2.COLOR_BGR2LAB).reshape(-1, 3)
+        px = lab[(p["mask"] > 127).ravel()]
+        if len(px):
+            piece_px.append(px[rng.choice(len(px), min(len(px), 400), replace=False)])
+    if not piece_px:
+        return None
+    art = cv2.cvtColor(box_rect, cv2.COLOR_BGR2LAB)
+    h, w = art.shape[:2]
+    if scan_map and len(scan_map) == cols * rows and scan_map.count("0") >= COLOR_MIN_MISSING:
+        missing = np.array([ch == "0" for ch in scan_map]).reshape(rows, cols)
+        sel = cv2.resize(missing.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+        art_px = art[sel]
+    else:
+        art_px = art.reshape(-1, 3)
+    art_px = art_px[rng.choice(len(art_px), min(len(art_px), 200000), replace=False)]
+    return ColorNormalizer(np.concatenate(piece_px).astype(np.float32), art_px.astype(np.float32))
+
+
+# Histograma de cor (luz, a, b) e quanto a normalização de cor pode esticar o desvio de um canal
+HIST_BINS = (4, 16, 16)
+COLOR_MAX_STRETCH = 2.0
+# Mínimo de células faltando para usar só elas como referência de cor da arte
+COLOR_MIN_MISSING = 20
 
 # Com centenas de peças na mesa, só as N mais parecidas na cor (e com bordas compatíveis)
 # passam pela comparação fina, que é a parte cara
 PREFILTER_KEEP = 60
 
 
-def match_cell(patch, pieces, top_k=5, hole=None):
+def match_cell(patch, pieces, top_k=5, hole=None, color_tf=None):
     """
     Ordena as peças da mesa pela semelhança com a célula-alvo da arte.
     `hole`: formato do buraco no tabuleiro (hole_shapes), se conhecido — cada lado que não bate com
     a peça naquela rotação pesa HOLE_MISMATCH (filtro suave: a medida dos lados pode errar).
+    `color_tf`: ColorNormalizer das fotos da mesa para as cores da caixa (cor e desenho).
     Retorna lista (melhor primeiro) de dict(piece, rotation, score, visual, color, flats_ok, shape_ok).
     """
     region_lab = cv2.cvtColor(patch["image"], cv2.COLOR_BGR2LAB)
@@ -537,7 +601,7 @@ def match_cell(patch, pieces, top_k=5, hole=None):
     # Histograma de cor da célula (com um pouco das vizinhas, como as abas da peça)
     hx1, hy1 = int(max(0, cx - cell_w * 0.65)), int(max(0, cy - cell_h * 0.65))
     hx2, hy2 = int(min(rw, cx + cell_w * 0.65)), int(min(rh, cy + cell_h * 0.65))
-    cell_hist = _ab_hist(region_lab[hy1:hy2, hx1:hx2])
+    cell_hist = _lab_hist(region_lab[hy1:hy2, hx1:hx2])
     # Célula lisa (céu, fundo): o desenho não diferencia peças, a cor sim → peso do visual pela textura
     cell_std = float(region_lab[hy1:hy2, hx1:hx2, 0].std())
     w_visual = float(np.clip(cell_std / 25.0, 0.25, 0.75))
@@ -558,7 +622,9 @@ def match_cell(patch, pieces, top_k=5, hole=None):
         shapes = side_shapes(piece.get("upright_mask")) if use_hole else None
         best_shape = max(shape_factor(shapes, deg) for deg, _ in ROTATIONS)
         piece_lab = cv2.cvtColor(piece["crop"], cv2.COLOR_BGR2LAB)
-        color = (cv2.compareHist(cell_hist, _ab_hist(piece_lab, piece["mask"]), cv2.HISTCMP_CORREL) + 1) / 2
+        if color_tf is not None:
+            piece_lab = color_tf(piece_lab)
+        color = _color_similarity(cell_hist, _lab_hist(piece_lab, piece["mask"]))
         pre.append((color * (1.0 if flats_ok else 0.5) * best_shape, color, flats, shapes, piece))
     pre.sort(key=lambda t: t[0], reverse=True)
 
@@ -568,14 +634,19 @@ def match_cell(patch, pieces, top_k=5, hole=None):
         if frame is None:
             continue
         lab_full, mask_full, radius, body_c = frame
+        if color_tf is not None:
+            lab_full = color_tf(lab_full)
         texture = min(1.0, float(lab_full[:, :, 0][mask_full > 0].std()) / MIN_TEXTURE_STD) if (mask_full > 0).any() else 0.0
 
         best, best_rot = -1.0, 0
         allowed = [deg for deg, _ in ROTATIONS if rotate_sides(flats, deg) == expected]
         flats_ok = bool(allowed)
-        for k in BODY_FROM_RADIUS:
-            # Corpo da peça ≈ k × raio → mede cell_w px na arte normalizada
-            scale = cell_w / (k * radius)
+        # Corpo da peça em px: conhecido pela folha A4 (mm × px/mm) ou estimado pelo raio inscrito
+        bodies = [piece["body_px"] * f for f in KNOWN_BODY_STEPS] if piece.get("body_px") \
+            else [k * radius for k in BODY_FROM_RADIUS]
+        for body in bodies:
+            # O corpo mede cell_w px na arte normalizada
+            scale = cell_w / body
             tw, th = int(round(lab_full.shape[1] * scale)), int(round(lab_full.shape[0] * scale))
             if tw < 8 or th < 8:
                 continue
@@ -630,10 +701,14 @@ def is_confident(ranked):
             and ranked[0].get("shape_ok") is not False)
 
 
-def draw_candidates(table_bgr, ranked, confident):
-    """Circula os candidatos numerados: 1 em verde (ou âmbar se incerto), os demais em cinza-claro."""
+def draw_candidates(table_bgr, ranked, confident, ranks=None):
+    """
+    Circula os candidatos numerados: 1 em verde (ou âmbar se incerto), os demais em cinza-claro.
+    `ranks`: posição (0 = melhor) de cada candidato na lista geral, quando a foto tem só alguns deles.
+    """
     out = table_bgr.copy()
-    for i, cand in reversed(list(enumerate(ranked))):
+    ranks = list(range(len(ranked))) if ranks is None else ranks
+    for i, cand in reversed(list(zip(ranks, ranked))):
         x, y, w, h = cand["piece"]["bbox"]
         cx, cy = cand["piece"]["centroid"]
         radius = int(max(w, h) * 0.75)
