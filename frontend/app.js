@@ -849,6 +849,7 @@ class InteractiveImageViewer {
 
 // Elementos do Tabuleiro
 const boardInput = document.getElementById('boardInput');
+const boardInputGallery = document.getElementById('boardInputGallery');
 const boardInputReplace = document.getElementById('boardInputReplace');
 const boardUploadLabel = document.getElementById('boardUploadLabel');
 const boardPreview = document.getElementById('boardPreview');
@@ -979,7 +980,7 @@ function loadBoardImage(blob) {
   boardViewer.clearSelection();
   boardPreview.onload = () => boardViewer.reset();
   setObjectUrl(boardPreview, blob);
-  hide(boardUploadLabel, 'flex');
+  hide(boardUploadLabel);
   show(boardContainer, 'flex');
   checkReady();
 }
@@ -1008,7 +1009,7 @@ function clearBoxImage() {
 }
 
 // Carregar Tabuleiro
-for (const input of [boardInput, boardInputReplace]) {
+for (const input of [boardInput, boardInputGallery, boardInputReplace]) {
   input.addEventListener('change', async () => {
     const blob = await readPickedImage(input);
     if (blob) loadBoardImage(blob);
