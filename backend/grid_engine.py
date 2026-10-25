@@ -33,8 +33,10 @@ COLOR_WEIGHT = 2.0
 NCC_WEIGHT = 4.0
 NCC_NEUTRAL = 0.45
 
-# Tamanho (px) da célula na busca da peça
-MATCH_CELL = 64
+# Tamanho (px) da célula na busca da peça. 38 em vez de 64: a comparação por template (matchTemplate) era 86% do tempo
+# e 2,5× mais rápida a 38 px. Com gabarito (40 buscas sintéticas) deu o mesmo resultado (38 de 40 em 1º, 32 certos com
+# confiança e 0 errados); nas fotos reais o 1º lugar de antes continua entre os 3 primeiros em 25 de 25 buscas
+MATCH_CELL = 38
 # Lado do corpo da peça ≈ k × raio do maior círculo inscrito na máscara (sem/ com encaixes fundos)
 BODY_FROM_RADIUS = (2.0, 2.3, 2.6, 3.0)
 # Com a escala da folha A4, o corpo é conhecido: testa só ±8% (corte e impressão variam um pouco)

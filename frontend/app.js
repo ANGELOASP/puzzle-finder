@@ -608,6 +608,7 @@ async function loadPuzzlesFromSupabase(autoSelectId = null) {
 puzzleSelect.addEventListener('change', (e) => {
   const selected = puzzles.find(p => p.id === e.target.value);
   if (!selected) {
+    resetPhotos();
     currentPuzzle = null;
     hide(puzzleProgressContainer);
     hide(boxSavedBadge);
@@ -618,7 +619,16 @@ puzzleSelect.addEventListener('change', (e) => {
   onPuzzleSelected(selected);
 });
 
+// As fotos das peças pertencem ao quebra-cabeça aberto: ao trocar, a sessão dele fica salva no aparelho
+// (Session) e a do próximo é restaurada em Workspace.onGridMode
+function resetPhotos() {
+  Workspace.leavePuzzle();
+  tablePhotos.splice(0).forEach(p => URL.revokeObjectURL(p.url));
+  renderTablePhotos();
+}
+
 async function onPuzzleSelected(puzzle) {
+  resetPhotos();
   currentPuzzle = puzzle;
   exitGridMode();
   show(puzzleProgressContainer);
@@ -1043,92 +1053,6 @@ const MAX_TABLE_PHOTOS = 40;
 const PHOTOS_PER_REQUEST = 3;
 document.getElementById('tablePhotosMax').textContent = String(MAX_TABLE_PHOTOS);
 
-// Conexão caída no meio (servidor reiniciando ou acordando): espera o servidor voltar e tenta mais uma vez
-async function fetchWithRetry(url, options, timeoutMs) {
-  try {
-    return await fetchWithTimeout(url, options, timeoutMs);
-  } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    try {
-      await fetchWithTimeout(`${getApiUrl()}/healthz`, {}, 75000);
-      return await fetchWithTimeout(url, options, timeoutMs);
-    } catch (err2) {
-      if (err2.name === 'AbortError') throw err2;
-      throw new Error('O servidor de análise não respondeu. Ele pode ter reiniciado: tente de novo, com menos fotos de uma vez se continuar.');
-    }
-  }
-}
-
-// Envia as fotos em lotes, um depois do outro. Devolve [{ offset, data }] dos lotes que deram certo;
-// lote sem peça aproveitável (404) é pulado, os outros erros param tudo.
-async function postPhotosInBatches(path, blobs, buildForm, { timeoutMs = 120000, onBatch, errorText } = {}) {
-  const parts = [];
-  let skipped = 0, lastError = null;
-  for (let start = 0; start < blobs.length; start += PHOTOS_PER_REQUEST) {
-    const chunk = blobs.slice(start, start + PHOTOS_PER_REQUEST);
-    if (onBatch) onBatch(start, start + chunk.length, blobs.length);
-    const res = await fetchWithRetry(`${getApiUrl()}${path}`, {
-      method: 'POST', headers: await authHeaders(), body: await buildForm(chunk),
-    }, timeoutMs);
-    if (res.status === 404 && blobs.length > PHOTOS_PER_REQUEST) {
-      skipped += chunk.length;
-      lastError = new Error(await apiErrorMessage(res, errorText));
-      continue;
-    }
-    if (!res.ok) throw new Error(await apiErrorMessage(res, errorText));
-    parts.push({ offset: start, size: chunk.length, data: await res.json() });
-  }
-  if (!parts.length) throw lastError || new Error(errorText);
-  if (skipped) notify(`${skipped} ${skipped === 1 ? 'foto não teve' : 'fotos não tiveram'} peças aproveitáveis e ${skipped === 1 ? 'ficou' : 'ficaram'} de fora.`, 'info', 6000);
-  return parts;
-}
-
-// Resumo das fotos na posição certa (lote que falhou deixa buracos vazios)
-function mergedPhotos(parts, total) {
-  const photos = new Array(total).fill(null);
-  for (const { offset, data } of parts) (data.photos || []).forEach((ph, i) => { photos[offset + i] = ph; });
-  return photos;
-}
-
-const shiftPhoto = (offset) => (x) => ({ ...x, photo: (x.photo || 0) + offset });
-
-// Buraco → peça em vários lotes: junta as candidatas e refaz a confiança na lista geral
-function mergeFindCell(parts, total) {
-  if (parts.length === 1 && parts[0].offset === 0) return parts[0].data;
-  const cands = [];
-  for (const { offset, data } of parts) {
-    data.candidates.forEach((c, i) => cands.push({ ...shiftPhoto(offset)(c), batchConfident: i === 0 && data.confident }));
-  }
-  cands.sort((a, b) => b.score - a.score);
-  const top = cands.slice(0, 5).map((c, i) => ({ ...c, rank: i + 1 }));
-  // Mesmo critério do servidor (margem de 12 pontos sobre a 2ª), agora contra as candidatas de todos os lotes
-  const confident = Boolean(top[0] && top[0].batchConfident && (top.length < 2 || top[0].score - top[1].score >= 12));
-  const first = parts[0].data;
-  return {
-    ...first,
-    candidates: top,
-    confident,
-    pieces_detected: parts.reduce((n, p) => n + (p.data.pieces_detected || 0), 0),
-    photos: mergedPhotos(parts, total),
-    annotated_tables: parts.flatMap(({ offset, data }) => (data.annotated_tables || []).map(shiftPhoto(offset))),
-  };
-}
-
-// Modo sem mapa em vários lotes: fica o lote com a peça mais parecida
-function mergeFindPiece(parts, total) {
-  if (parts.length === 1 && parts[0].offset === 0) return parts[0].data;
-  const best = parts.reduce((a, b) => ((b.data.score || 0) > (a.data.score || 0) ? b : a));
-  const d = best.data;
-  const images = d.annotated_tables || [{ photo: d.photo || 0, image_base64: d.annotated_table_base64 }];
-  return {
-    ...d,
-    photo: (d.photo || 0) + best.offset,
-    annotated_tables: images.map(shiftPhoto(best.offset)),
-    candidates: (d.candidates || []).map(shiftPhoto(best.offset)),
-    pieces_detected: parts.reduce((n, p) => n + (p.data.pieces_detected || 0), 0),
-    photos: mergedPhotos(parts, total),
-  };
-}
 let lastFoundResult = null;
 
 async function compressImage(file, maxDimension = 1600, quality = 0.85) {
@@ -1229,7 +1153,7 @@ for (const input of [tableInput, tableInputGallery]) {
         Camera.learnFrom(exif);
         const issues = Camera.check(exif, 'pieces');
         const blob = await compressImage(file, TABLE_MAX_SIDE, 0.9);
-        tablePhotos.push({ blob, url: URL.createObjectURL(blob), issues });
+        tablePhotos.push(Search.newPhoto(blob, issues));
         warnings.push(...issues);
       } catch (err) {
         notify(err.message, 'error');
@@ -1268,13 +1192,24 @@ function renderTablePhotos() {
       renderTablePhotos();
     });
     li.append(img, tag, del);
-    if (photo.issues && photo.issues.length) {
+    if (photo.done || photo.confirmed.length) {
+      // Foto concluída sai das próximas buscas; tocar no selo volta a incluir (ou conclui à mão)
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = `photo-done${photo.done ? ' is-done' : ''}`;
+      done.textContent = photo.done ? '✓ concluída' : `${photo.confirmed.length}${photo.pieceCount ? `/${photo.pieceCount}` : ''} encaixadas`;
+      done.setAttribute('aria-pressed', String(photo.done));
+      done.setAttribute('aria-label', photo.done ? `Foto ${i + 1} concluída: tocar para voltar a incluí-la nas buscas` : `Foto ${i + 1}: ${photo.confirmed.length} peças encaixadas. Tocar para marcar como concluída`);
+      done.addEventListener('click', () => { photo.done = !photo.done; renderTablePhotos(); });
+      li.appendChild(done);
+    } else if (photo.issues && photo.issues.length) {
       const w = document.createElement('span');
       w.className = 'photo-warn';
       w.textContent = photo.issues.map((x) => x.short).join(' · ');
       w.title = photo.issues.map((x) => x.text).join(' ');
       li.appendChild(w);
     }
+    if (photo.done) li.classList.add('opacity-60');
     tablePhotosList.appendChild(li);
   });
   const n = tablePhotos.length;
@@ -1353,10 +1288,10 @@ async function holeBlob() {
 }
 
 // Requisição da busca por célula do mapa
-async function buildFindCellForm(tableBlobs, { annotate = true } = {}) {
+async function buildFindCellForm(tableItems, { annotate = true } = {}) {
   const formData = new FormData();
-  appendTablePhotos(formData, tableBlobs);
-  formData.append('box_file', grid.artBlob, 'art.jpg');
+  Search.appendPhotos(formData, tableItems); // fotos (com chave do servidor ou arquivo) ou quadros soltos da câmera
+  Search.appendArt(formData);
   formData.append('cols', currentPuzzle.cols);
   formData.append('rows', currentPuzzle.rows);
   formData.append('col', grid.cell.col);
@@ -1470,24 +1405,38 @@ btnFind.addEventListener('click', async () => {
   try {
     if (apiWakeup) await apiWakeup;
     const byCell = gridActive();
-    const blobs = tablePhotos.map(p => p.blob);
-    const parts = await postPhotosInBatches(`/api/${byCell ? 'find-cell' : 'find-piece'}`, blobs,
-      // No mapa a tela de comparação não usa as fotos anotadas: sem elas a resposta fica bem menor
-      (chunk) => (byCell ? buildFindCellForm(chunk, { annotate: false }) : buildFindPieceForm(chunk)), {
-        errorText: 'Não foi possível encontrar a peça correspondente.',
-        onBatch: (from, to, total) => {
-          if (total <= PHOTOS_PER_REQUEST) return;
-          loadingText.textContent = `Analisando as fotos ${from + 1}–${to} de ${total}…`;
-          loadingSubtext.textContent = `São ${Math.ceil(total / PHOTOS_PER_REQUEST)} lotes de até ${PHOTOS_PER_REQUEST} fotos.`;
-        },
-      });
-    const data = byCell ? mergeFindCell(parts, blobs.length) : mergeFindPiece(parts, blobs.length);
+    // Foto concluída (todas as peças já encaixadas) fica de fora
+    const active = tablePhotos.filter(p => !p.done);
+    if (!active.length) {
+      notify('Todas as fotos estão concluídas. Toque no selo "concluída" de uma foto para voltar a incluí-la.', 'info', 6000);
+      return;
+    }
+    const path = `/api/${byCell ? 'find-cell' : 'find-piece'}`;
+    const build = (chunk) => (byCell ? buildFindCellForm(chunk, { annotate: false }) : buildFindPieceForm(chunk.map(p => p.blob)));
+    const progress = ({ from, to, total }) => {
+      if (total <= PHOTOS_PER_REQUEST) return;
+      loadingText.textContent = `Analisando as fotos ${from + 1}–${to} de ${total}…`;
+      loadingSubtext.textContent = `Para sozinho quando a peça for muito provável. ${Math.ceil(total / PHOTOS_PER_REQUEST)} lotes de até ${PHOTOS_PER_REQUEST} fotos.`;
+    };
+    const errorText = 'Não foi possível encontrar a peça correspondente.';
+    const parts = [];
+    // No mapa a tela de comparação não usa as fotos anotadas (resposta bem menor) e a busca para na 1ª "muito provável"
+    const first = await Search.run(path, active, build, {
+      parts, errorText, onBatch: progress,
+      stopWhen: byCell ? (ps) => Boolean((Search.mergeFindCell(ps) || {}).confident) : null,
+    });
+    const data = byCell ? Search.mergeFindCell(parts) : Search.mergeFindPiece(parts);
+    // Depois de parar cedo: procura nas fotos que sobraram, a pedido (botão na tela de comparação)
+    const more = first.remaining.length ? async () => {
+      const r = await Search.run(path, active, build, { parts, errorText, onBatch: progress });
+      return { data: Search.mergeFindCell(parts), remaining: r.remaining.length };
+    } : null;
     setServiceStatus('api', 'ok', 'Online');
     hide(apiNotice, 'flex');
 
     // Mapa: as candidatas abrem direto na tela de comparar e confirmar
     if (byCell) {
-      Workspace.openFindResults(data, { ...grid.cell });
+      Workspace.openFindResults(data, { ...grid.cell }, { remaining: first.remaining.length, more });
       if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
       return;
     }
@@ -1625,6 +1574,7 @@ const grid = {
   boxBitmap: null,  // foto da caixa (canvas)
   art: null,        // arte retificada: exatamente cols × rows células
   artBlob: null,
+  artKey: null, // chave da arte no servidor: depois da 1ª busca ele a guarda e o app não a reenvia
   scanMap: null,    // '1' montada, '0' faltando, '?' desconhecida (linha por linha)
   cell: null,       // {col, row} escolhida
   board: null,      // última foto do tabuleiro escaneado {img, corners}: dá o formato dos buracos
@@ -1656,7 +1606,7 @@ const mapViewer = new InteractiveImageViewer({
 });
 
 function exitGridMode() {
-  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = null;
+  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = grid.artKey = null;
   hide(gridCard);
   show(legacyTarget, 'grid');
   Workspace.onGridMode(false);
@@ -1695,6 +1645,7 @@ async function buildArt() {
   const cellH = Math.max(12, Math.round(cellW * Grid.cellAspect(p, grid.boxBitmap, corners)));
   grid.art = Grid.rectify(grid.boxBitmap, corners, { cols: p.cols, rows: p.rows, cellW, cellH });
   grid.artBlob = await Grid.canvasToBlob(grid.art, 0.92);
+  grid.artKey = null;
   hide(gridSetup);
   show(mapContainer, 'flex');
   await renderMapImage(true);

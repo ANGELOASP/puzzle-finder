@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPExcept
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import grid_engine
+import piece_cache
 from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
 
@@ -142,34 +143,106 @@ def cv2_to_base64_jpeg(cv2_img, quality=85):
 def health():
     return {"status": "online", "message": "PuzzleFinder API online na nuvem!"}
 
-async def read_tables(table_file, table_files):
-    """Fotos das peças: `table_file` (uma) e/ou `table_files` (várias)."""
+class PhotoRef:
+    """Foto que o app não reenviou porque o servidor já separou as peças dela (chave devolvida antes)."""
+
+    def __init__(self, key):
+        self.key = key
+
+
+async def read_tables(table_file, table_files, photo_refs=None):
+    """
+    Fotos das peças: `table_file` (uma) e/ou `table_files` (várias). Com `photo_refs` (JSON), a ordem das fotos vem
+    dele: [{"upload": i}] pega o i-ésimo arquivo enviado e [{"key": "..."}] usa uma foto já guardada no cache.
+    """
     uploads = ([table_file] if table_file is not None else []) + list(table_files or [])
-    if len(uploads) > MAX_TABLE_PHOTOS:
+    refs = None
+    if photo_refs:
+        try:
+            refs = json.loads(photo_refs)
+            assert isinstance(refs, list) and all(isinstance(r, dict) for r in refs)
+        except (ValueError, AssertionError):
+            raise HTTPException(status_code=400, detail="Referência de fotos inválida.")
+    if (len(refs) if refs is not None else len(uploads)) > MAX_TABLE_PHOTOS:
         raise HTTPException(status_code=400, detail=f"Envie no máximo {MAX_TABLE_PHOTOS} fotos de peças por busca.")
-    tables = [b for b in [await read_upload(u) for u in uploads] if b]
+    data = [await read_upload(u) for u in uploads]
+    if refs is None:
+        tables = [b for b in data if b]
+    else:
+        tables = []
+        for r in refs:
+            if isinstance(r.get("key"), str):
+                tables.append(PhotoRef(r["key"]))
+            elif isinstance(r.get("upload"), int) and 0 <= r["upload"] < len(data) and data[r["upload"]]:
+                tables.append(data[r["upload"]])
+            else:
+                raise HTTPException(status_code=400, detail="Referência de fotos inválida.")
     if not tables:
         raise HTTPException(status_code=400, detail="Envie ao menos uma foto das peças.")
     return tables
 
 
-def segment_tables(tables, piece_mm=None):
+async def read_art(box_file, box_key):
+    """
+    Arte da caixa: o arquivo, ou a chave de uma arte que o servidor já recebeu (o app a reenviava em todo lote).
+    Devolve (bytes, chave); chave desconhecida → 409 e o app manda o arquivo.
+    """
+    data = await read_upload(box_file) if box_file is not None else None
+    if data is not None:
+        return data, piece_cache.art_cache.put(data)
+    if box_key:
+        data = piece_cache.art_cache.get(box_key)
+        if data is None:
+            raise HTTPException(status_code=409, detail={"missing": [], "missing_box": box_key})
+        return data, box_key
+    raise HTTPException(status_code=400, detail="Envie a arte.")
+
+
+def segment_tables(tables, piece_mm=None, need_image=False):
     """
     Cada foto: acha a folha A4 (endireita, balanço de branco, escala) e separa as peças.
     Cada peça ganha "photo" (índice da foto) e, com folha e tamanho da peça conhecidos, "body_px".
+    Foto já separada antes vem do cache (piece_cache) e não é segmentada de novo. `need_image`: quem vai desenhar
+    na foto precisa da imagem, que o cache não guarda (nesse caso o cache só é preenchido, nunca lido).
     """
+    suffix = "-" + ("x" if not piece_mm else f"{piece_mm:.2f}") + f"-{MAX_TABLE_SIDE}"
+    # Antes de qualquer trabalho: as fotos que o app não reenviou precisam estar no cache (senão ele reenvia)
+    missing = [t.key for t in tables if isinstance(t, PhotoRef) and (need_image or not t.key.endswith(suffix) or not piece_cache.cache.has(t.key))]
+    if missing:
+        raise HTTPException(status_code=409, detail={"missing": missing})
     photos, pieces = [], []
     for i, data in enumerate(tables):
-        photo = TablePhoto(img_bytes_to_cv2(data, MAX_TABLE_SIDE))
-        found = engine.segment_table_pieces(photo.image)
-        # Branco de referência: a folha A4 inteira (já corrigida na foto endireitada) ou o papel/mesa
-        # clara em volta das peças quando a folha ocupa a foto toda (o padrão)
-        photo.white_ref = photo.on_paper or balance_pieces_on_background(photo.image, found) is not None
+        hit = None
+        if isinstance(data, PhotoRef):
+            hit = piece_cache.cache.get(data.key)
+            if hit is None:  # saiu do cache entre a checagem e agora
+                raise HTTPException(status_code=409, detail={"missing": [data.key]})
+        else:
+            key = piece_cache.photo_key(data, piece_mm, MAX_TABLE_SIDE)
+            if not need_image:
+                hit = piece_cache.cache.get(key)
+        if hit is not None:
+            photo, found = hit
+        else:
+            photo = TablePhoto(img_bytes_to_cv2(data, MAX_TABLE_SIDE))
+            found = engine.segment_table_pieces(photo.image)
+            # Branco de referência: a folha A4 inteira (já corrigida na foto endireitada) ou o papel/mesa
+            # clara em volta das peças quando a folha ocupa a foto toda (o padrão)
+            photo.white_ref = photo.on_paper or balance_pieces_on_background(photo.image, found) is not None
+            for p in found:
+                if photo.px_per_mm and piece_mm:
+                    p["body_px"] = piece_mm * photo.px_per_mm
+            photo.pieces = len(found)
+            photo.key = key
+            piece_cache.cache.put(key, photo, found)
+            if not need_image:
+                # Usa a mesma versão (comprimida) que as próximas buscas vão ler do cache: o resultado de uma busca
+                # não depende de a foto já estar guardada ou não
+                again = piece_cache.cache.get(key)
+                if again is not None:
+                    photo, found = again
         for p in found:
             p["photo"] = i
-            if photo.px_per_mm and piece_mm:
-                p["body_px"] = piece_mm * photo.px_per_mm
-        photo.pieces = len(found)
         photos.append(photo)
         pieces += found
     if not pieces:
@@ -221,8 +294,9 @@ def piece_thumb(piece):
 
 
 def photos_summary(photos):
+    # `key`: com ela o app pode pedir a mesma foto de novo sem reenviá-la (ver piece_cache)
     return [{"frame_size": list(p.original_size), "on_paper": p.on_paper, "white_ref": p.white_ref,
-             "pieces": p.pieces} for p in photos]
+             "pieces": p.pieces, "key": getattr(p, "key", None)} for p in photos]
 
 
 def fit_jpeg(img, max_side=2000):
@@ -260,7 +334,7 @@ def process_find_piece(tables, box_bytes, board_bytes,
                        target_x_ratio, target_y_ratio, board_x_ratio, board_y_ratio,
                        total_pieces, annotate):
     # 1. Separa as peças soltas de todas as fotos
-    photos, pieces = segment_tables(tables)
+    photos, pieces = segment_tables(tables, need_image=True)
 
     box_patch = None
     slot_contour = None
@@ -363,13 +437,15 @@ def process_scan(box_bytes, board_bytes, cols, rows, margin, points):
 async def locate_pieces(
     table_files: Optional[List[UploadFile]] = File(None),
     table_file: Optional[UploadFile] = File(None),
-    box_file: UploadFile = File(...),
+    box_file: Optional[UploadFile] = File(None),
+    box_key: Optional[str] = Form(None),
     cols: int = Form(...),
     rows: int = Form(...),
     scan_map: Optional[str] = Form(None),
     piece_mm: Optional[float] = Form(None),
     top_k: int = Form(5),
     calib: Optional[str] = Form(None),
+    photo_refs: Optional[str] = Form(None),
     user_id: Optional[str] = Depends(require_user),
 ):
     """
@@ -377,15 +453,15 @@ async def locate_pieces(
     onde ela mais provavelmente vai, com a rotação. É o caminho "fotografei estas peças: onde vão?".
     """
     check_grid(cols, rows)
-    tables = await read_tables(table_file, table_files)
-    box_bytes = await read_upload(box_file)
-    if box_bytes is None:
-        raise HTTPException(status_code=400, detail="Envie a arte.")
+    tables = await read_tables(table_file, table_files, photo_refs)
+    box_bytes, art_key = await read_art(box_file, box_key)
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
     pairs = parse_calib(calib, cols, rows)
-    return await run_in_threadpool(heavy(process_locate_pieces), tables, box_bytes, cols, rows, scan_map, piece_mm,
-                                   max(1, min(10, top_k)), pairs)
+    result = await run_in_threadpool(heavy(process_locate_pieces), tables, box_bytes, cols, rows, scan_map, piece_mm,
+                                     max(1, min(10, top_k)), pairs)
+    result["box_key"] = art_key
+    return result
 
 def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top_k, pairs=None):
     box = img_bytes_to_cv2(box_bytes)
@@ -412,6 +488,8 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
             "candidates": [{
                 "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
                 "score": round(c["score"] * 100, 1),
+                # Diferença média de cor (Lab) com a célula: o app usa para dar cada célula a uma peça só
+                "distance": round(c["distance"], 2),
             } for c in cands],
             "confident": cands[0]["score"] >= grid_engine.LOCATE_CONFIDENT,
         })
@@ -428,7 +506,8 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
 async def find_cell(
     table_file: Optional[UploadFile] = File(None),
     table_files: Optional[List[UploadFile]] = File(None),
-    box_file: UploadFile = File(...),
+    box_file: Optional[UploadFile] = File(None),
+    box_key: Optional[str] = Form(None),
     cols: int = Form(...),
     rows: int = Form(...),
     col: int = Form(...),
@@ -439,6 +518,7 @@ async def find_cell(
     scan_map: Optional[str] = Form(None),
     piece_mm: Optional[float] = Form(None),
     calib: Optional[str] = Form(None),
+    photo_refs: Optional[str] = Form(None),
     user_id: Optional[str] = Depends(require_user),
 ):
     """
@@ -454,21 +534,21 @@ async def find_cell(
     check_grid(cols, rows)
     if not (0 <= col < cols and 0 <= row < rows):
         raise HTTPException(status_code=400, detail="Peça fora da grade.")
-    tables = await read_tables(table_file, table_files)
-    box_bytes = await read_upload(box_file)
-    if box_bytes is None:
-        raise HTTPException(status_code=400, detail="Envie a arte.")
+    tables = await read_tables(table_file, table_files, photo_refs)
+    box_bytes, art_key = await read_art(box_file, box_key)
     hole_bytes = await read_upload(hole_file)
     if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
         piece_mm = None
     pairs = parse_calib(calib, cols, rows)
-    return await run_in_threadpool(heavy(process_find_cell), tables, box_bytes, cols, rows, col, row,
-                                   max(1, min(10, top_k)), annotate, hole_bytes, scan_map, piece_mm, pairs)
+    result = await run_in_threadpool(heavy(process_find_cell), tables, box_bytes, cols, rows, col, row,
+                                     max(1, min(10, top_k)), annotate, hole_bytes, scan_map, piece_mm, pairs)
+    result["box_key"] = art_key
+    return result
 
 def process_find_cell(tables, box_bytes, cols, rows, col, row, top_k, annotate,
                       hole_bytes=None, scan_map=None, piece_mm=None, pairs=None):
     box = img_bytes_to_cv2(box_bytes)
-    photos, pieces = segment_tables(tables, piece_mm)
+    photos, pieces = segment_tables(tables, piece_mm, need_image=annotate)
     hole = None
     if hole_bytes:
         hole = grid_engine.hole_shapes(img_bytes_to_cv2(hole_bytes), 3, 3, 0, 1, 1,
