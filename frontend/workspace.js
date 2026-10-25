@@ -306,7 +306,7 @@ const Workspace = (() => {
     const groupsEl = $('locateGroups');
     groupsEl.innerHTML = '';
     const data = state.located;
-    if (!data) { hide(summary, 'flex'); $('btnReviewSure').classList.add('hidden'); return; }
+    if (!data) { hide(summary, 'flex'); $('btnReviewSure').classList.add('hidden'); $('locateHint').classList.add('hidden'); return; }
 
     // Grupos: bordas (lados retos) primeiro, depois as regiões do mapa, e as sem lugar claro por último
     const groups = new Map();
@@ -337,6 +337,7 @@ const Workspace = (() => {
     chip('chip-low', `${low} sem lugar claro`);
     if (done) chip('chip-sure', `${done} ${done === 1 ? 'encaixada' : 'encaixadas'}`);
     show(summary, 'flex');
+    $('locateHint').classList.toggle('hidden', !(sure + maybe));
     const reviewBtn = $('btnReviewSure');
     reviewBtn.classList.toggle('hidden', !sure);
     $('btnReviewSureText').textContent = `Conferir as ${sure} ${sure === 1 ? 'certa' : 'certas'} em sequência`;
