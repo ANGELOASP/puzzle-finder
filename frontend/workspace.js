@@ -23,6 +23,11 @@ const Workspace = (() => {
     photoZoom: false,     // "ver na foto": foto inteira (padrão) ou de perto
     bitmaps: new Map(),   // foto das peças → ImageBitmap (para o recorte "ver na foto")
     opened: null,         // passo do assistente aberto
+    assign: new Map(),    // id da peça → candidata que ficou com ela (cada célula aceita uma peça só)
+    review: null,         // conferência em sequência das "certas": { queue: [ids] }
+    locateParts: [],      // lotes do "onde vai cada peça" já prontos (continua de onde parou)
+    locateKey: null,      // a que fotos e mapa esses lotes pertencem
+    persistOff: true,     // não salva enquanto troca de quebra-cabeça ou restaura a sessão
   };
 
   // ---------- Blocos compartilhados: fotos das peças e botões de busca ----------
@@ -34,9 +39,15 @@ const Workspace = (() => {
     state.located = null;
     state.rejected.clear();
     state.placedPieces.clear();
+    state.assign = new Map();
+    state.review = null;
+    state.locateParts = [];
+    state.locateKey = null;
+    state.persistOff = true;
     renderLocate();
     setMode('find');
     refresh({ autoOpen: true });
+    if (on) restoreSession();
   }
 
   // ---------- Assistente ----------
@@ -70,7 +81,11 @@ const Workspace = (() => {
     renderCalib();
     $('btnLocate').disabled = !(grid.art && n);
     $('btnLocateText').textContent = n ? `Localizar as peças ${n === 1 ? 'da foto' : `das ${n} fotos`}` : 'Localizar as peças das fotos';
-    if (autoOpen) openStep(firstTodo);
+    if (autoOpen) {
+      openStep(firstTodo);
+      // Entrou no mapa (ou escaneou): refaz o que depende do mapa montado, como a sessão restaurada
+      if (state.located) { refreshAssign(); renderLocate(); renderMarks(); }
+    }
   }
 
   function openStep(id) {
@@ -95,12 +110,24 @@ const Workspace = (() => {
 
   function onPhotosChanged() {
     refresh();
+    if (state.located) {
+      // Foto removida: as peças dela saem do resultado
+      const ids = new Set(tablePhotos.map((p) => p.id));
+      const before = state.located.pieces.length;
+      state.located.pieces = state.located.pieces.filter((pc) => ids.has(pc.photoId));
+      state.located.pieces.forEach((pc) => { pc.photo = tablePhotos.findIndex((p) => p.id === pc.photoId); });
+      if (!tablePhotos.length) state.located = null;
+      if (state.located && state.located.pieces.length !== before) { refreshAssign(); renderLocate(); renderMarks(); }
+      if (!state.located) { refreshAssign(); renderLocate(); renderMarks(); }
+    }
     if (state.located && state.locatedFor !== photosSignature()) {
       $('locateIntro').textContent = 'As fotos mudaram. Localize de novo para incluir as peças novas.';
     }
+    persist();
   }
 
-  const photosSignature = () => tablePhotos.map((p) => p.url).join('|');
+  // Fotos que já foram localizadas (as concluídas ficam de fora)
+  const photosSignature = () => tablePhotos.filter((p) => !p.done).map((p) => p.id).join('|');
 
   // ---------- Abas ----------
   const tabs = { find: $('tabFind'), locate: $('tabLocate') };
@@ -112,6 +139,8 @@ const Workspace = (() => {
       tab.setAttribute('aria-selected', String(on));
       tab.tabIndex = on ? 0 : -1;
     }
+    $('fullTabFind').setAttribute('aria-selected', String(mode === 'find'));
+    $('fullTabLocate').setAttribute('aria-selected', String(mode === 'locate'));
     $('panelFind').hidden = mode !== 'find';
     $('panelLocate').hidden = mode !== 'locate';
     $('mapLegend').textContent = mode === 'find'
@@ -123,6 +152,8 @@ const Workspace = (() => {
 
   tabs.find.addEventListener('click', () => setMode('find'));
   tabs.locate.addEventListener('click', () => setMode('locate'));
+  $('fullTabFind').addEventListener('click', () => setMode('find'));
+  $('fullTabLocate').addEventListener('click', () => setMode('locate'));
   $('tabFind').parentElement.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const next = state.mode === 'find' ? 'locate' : 'find';
@@ -134,57 +165,66 @@ const Workspace = (() => {
   $('btnLocate').addEventListener('click', locate);
 
   async function locate() {
-    if (!tablePhotos.length || !grid.art) return;
+    const photos = tablePhotos.filter((p) => !p.done); // foto concluída fica de fora
+    if (!photos.length || !grid.art) {
+      if (tablePhotos.length && !photos.length) notify('Todas as fotos estão concluídas.', 'info');
+      return;
+    }
     const p = currentPuzzle;
     const btn = $('btnLocate');
     btn.disabled = true;
     show($('locateLoading'), 'flex');
     $('locateLoadingText').textContent = serviceStatus.api === 'ok'
-      ? `Separando as peças de ${tablePhotos.length === 1 ? '1 foto' : `${tablePhotos.length} fotos`} e comparando com a caixa…`
+      ? `Separando as peças de ${photos.length === 1 ? '1 foto' : `${photos.length} fotos`} e comparando com a caixa…`
       : 'Acordando o servidor… a primeira busca do dia pode levar até 1 minuto.';
+    // Lotes já prontos valem enquanto as fotos e o mapa forem os mesmos: se a internet cair, continua de onde parou
+    const key = `${grid.scanMap || ''}|${photos.map((x) => x.id).join(',')}`;
+    if (state.locateKey !== key) { state.locateParts = []; state.locateKey = key; }
+    const parts = state.locateParts;
+    const calib = calibPayload();
+    const buildForm = (blobs) => {
+      const form = new FormData();
+      appendTablePhotos(form, blobs);
+      form.append('box_file', grid.artBlob, 'art.jpg');
+      form.append('cols', p.cols);
+      form.append('rows', p.rows);
+      form.append('top_k', '5');
+      if (grid.scanMap) form.append('scan_map', grid.scanMap);
+      if (calib.length) form.append('calib', JSON.stringify(calib));
+      if (p.width_cm > 0) form.append('piece_mm', String((p.width_cm * 10) / p.cols));
+      return form;
+    };
     try {
-      const blobs = tablePhotos.map((t) => t.blob);
-      const calib = calibPayload();
-      const buildForm = (chunk) => {
-        const form = new FormData();
-        appendTablePhotos(form, chunk);
-        form.append('box_file', grid.artBlob, 'art.jpg');
-        form.append('cols', p.cols);
-        form.append('rows', p.rows);
-        form.append('top_k', '5');
-        if (grid.scanMap) form.append('scan_map', grid.scanMap);
-        if (calib.length) form.append('calib', JSON.stringify(calib));
-        if (p.width_cm > 0) form.append('piece_mm', String((p.width_cm * 10) / p.cols));
-        return form;
-      };
       if (apiWakeup) await apiWakeup;
-      const parts = await postPhotosInBatches('/api/locate-pieces', blobs, buildForm, {
-        timeoutMs: 240000,
+      await Search.run('/api/locate-pieces', photos, buildForm, {
+        parts, timeoutMs: 240000,
         errorText: 'Não foi possível localizar as peças.',
-        onBatch: (from, to, total) => {
+        onPart: () => persist(),
+        onBatch: ({ from, to, total }) => {
           if (total > PHOTOS_PER_REQUEST) $('locateLoadingText').textContent = `Separando as peças das fotos ${from + 1}–${to} de ${total} e comparando com a caixa…`;
         },
       });
-      // Junta os lotes: id e número da foto passam a valer para a sessão inteira
-      state.located = {
-        ...parts[0].data,
-        pieces: parts.flatMap(({ offset, data }) => data.pieces.map((pc) => ({ ...pc, id: `${offset}-${pc.id}`, photo: pc.photo + offset }))),
-        pieces_detected: parts.reduce((n, x) => n + (x.data.pieces_detected || 0), 0),
-        photos: mergedPhotos(parts, blobs.length),
-      };
+      state.located = Search.mergeLocate(parts);
       state.locatedFor = photosSignature();
+      state.locateParts = [];
+      state.locateKey = null;
       state.rejected.clear();
       state.placedPieces.clear();
       // Peça já confirmada que continua nas fotos: mesma assinatura → já está encaixada
-      const confirmedSigs = new Set(calibLoad().map((p) => p.sig));
+      const confirmedSigs = new Set(calibLoad().map((c) => c.sig));
+      for (const photo of tablePhotos) photo.confirmed.forEach((sig) => confirmedSigs.add(sig));
       for (const piece of state.located.pieces) if (piece.sig && confirmedSigs.has(piece.sig)) state.placedPieces.add(piece.id);
+      refreshAssign();
       setServiceStatus('api', 'ok', 'Online');
       $('locateIntro').textContent = 'Toque numa peça (ou numa marca do mapa) para comparar com a caixa e confirmar.';
       renderLocate();
       renderMarks();
+      persist();
       if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
     } catch (err) {
-      notify(err.name === 'AbortError' ? 'O servidor demorou demais. Tente de novo em instantes.' : err.message, 'error', 7000);
+      const done = parts.filter((x) => x.data).reduce((n, x) => n + x.photos.length, 0);
+      const resume = done ? ` As ${done} fotos já analisadas ficaram salvas: toque em "Localizar" para continuar de onde parou.` : '';
+      notify((err.name === 'AbortError' ? 'O servidor demorou demais.' : err.message) + resume, 'error', 9000);
     } finally {
       hide($('locateLoading'), 'flex');
       btn.disabled = !(grid.art && tablePhotos.length);
@@ -197,9 +237,46 @@ const Workspace = (() => {
       && !(grid.scanMap && grid.scanMap[c.row * currentPuzzle.cols + c.col] === '1'));
   }
 
-  function confidence(piece, cand) {
-    if (!cand) return 'low';
-    if (cand === piece.candidates[0] && piece.confident) return 'sure';
+  // Cada célula aceita uma peça só. Em ordem de diferença de cor (a menor primeiro), cada peça fica com a melhor
+  // célula que ninguém levou. Nas fotos reais isso sobe o 1º lugar de 45% para 49% e, quando há quase uma peça para
+  // cada célula que falta, de 68% para 83%. Refeito a cada confirmação ou recusa.
+  function refreshAssign() {
+    state.assign = new Map();
+    if (!state.located || !currentPuzzle) return;
+    const triples = [];
+    for (const piece of state.located.pieces) {
+      if (state.placedPieces.has(piece.id)) continue;
+      for (const c of liveCandidates(piece)) triples.push([c.distance == null ? 1e9 : c.distance, piece, c]);
+    }
+    triples.sort((a, b) => a[0] - b[0]);
+    const taken = new Set();
+    for (const [, piece, c] of triples) {
+      const cell = c.row * currentPuzzle.cols + c.col;
+      if (state.assign.has(piece.id) || taken.has(cell)) continue;
+      state.assign.set(piece.id, c);
+      taken.add(cell);
+    }
+  }
+
+  // Onde a peça vai e com que confiança. "Vai aqui" (verde) só quando a célula é a 1ª da peça, a nota é alta
+  // e nenhuma outra peça melhor disputa a mesma célula (precisão nas fotos reais: 90–99%, antes 85–96%)
+  function placeOf(piece) {
+    const top = liveCandidates(piece)[0];
+    if (!top) return { cand: null, conf: 'low' };
+    const a = state.assign.get(piece.id);
+    if (a === top) {
+      const sure = piece.confident && top === piece.candidates[0];
+      return { cand: top, conf: sure ? 'sure' : top.score >= MAYBE ? 'maybe' : 'low' };
+    }
+    // A 1ª célula ficou com outra peça mais parecida: mostra a que sobrou, só como "talvez"
+    if (a) return { cand: a, conf: a.score >= 40 ? 'maybe' : 'low', disputed: true };
+    return { cand: top, conf: 'low', disputed: true };
+  }
+
+  // Confiança de uma candidata específica (na tela de comparar, onde dá para olhar as 5)
+  function confOf(piece, cand) {
+    const place = placeOf(piece);
+    if (cand === place.cand) return place.conf;
     return cand.score >= MAYBE ? 'maybe' : 'low';
   }
 
@@ -229,7 +306,7 @@ const Workspace = (() => {
     const groupsEl = $('locateGroups');
     groupsEl.innerHTML = '';
     const data = state.located;
-    if (!data) { hide(summary, 'flex'); return; }
+    if (!data) { hide(summary, 'flex'); $('btnReviewSure').classList.add('hidden'); return; }
 
     // Grupos: bordas (lados retos) primeiro, depois as regiões do mapa, e as sem lugar claro por último
     const groups = new Map();
@@ -240,8 +317,7 @@ const Workspace = (() => {
     let sure = 0, maybe = 0, low = 0, done = 0;
     for (const piece of data.pieces) {
       if (state.placedPieces.has(piece.id)) { done++; continue; }
-      const cand = liveCandidates(piece)[0];
-      const conf = confidence(piece, cand);
+      const { cand, conf } = placeOf(piece);
       if (conf === 'sure') sure++; else if (conf === 'maybe') maybe++; else low++;
       // Borda: lado reto E a célula provável está na borda do quebra-cabeça
       const isEdge = cand && piece.sides && Object.values(piece.sides).includes('flat')
@@ -261,6 +337,9 @@ const Workspace = (() => {
     chip('chip-low', `${low} sem lugar claro`);
     if (done) chip('chip-sure', `${done} ${done === 1 ? 'encaixada' : 'encaixadas'}`);
     show(summary, 'flex');
+    const reviewBtn = $('btnReviewSure');
+    reviewBtn.classList.toggle('hidden', !sure);
+    $('btnReviewSureText').textContent = `Conferir as ${sure} ${sure === 1 ? 'certa' : 'certas'} em sequência`;
 
     const order = [...groups.entries()].sort(([ka, a], [kb, b]) => {
       const rank = (k) => (k === 'edge' ? 0 : k === 'low' ? 2 : 1);
@@ -333,8 +412,7 @@ const Workspace = (() => {
     const active = state.cmp && state.cmp.kind === 'locate' ? state.cmp.piece.id : null;
     for (const piece of state.located.pieces) {
       if (state.placedPieces.has(piece.id)) continue;
-      const cand = liveCandidates(piece)[0];
-      const conf = confidence(piece, cand);
+      const { cand, conf } = placeOf(piece);
       if (!cand || conf === 'low') continue;
       const m = document.createElement('div');
       m.className = `mark ${piece.id === active ? 'mark-active' : conf === 'sure' ? 'mark-sure' : 'mark-maybe'}`;
@@ -358,8 +436,8 @@ const Workspace = (() => {
     let best = null;
     for (const piece of state.located.pieces) {
       if (state.placedPieces.has(piece.id)) continue;
-      const cand = liveCandidates(piece)[0];
-      if (!cand || confidence(piece, cand) === 'low') continue;
+      const { cand, conf } = placeOf(piece);
+      if (!cand || conf === 'low') continue;
       const d = Math.max(Math.abs(cand.col - col), Math.abs(cand.row - row));
       if (d > 1) continue;
       if (!best || d < best.d || (d === best.d && cand.score > best.cand.score)) best = { piece, cand, d };
@@ -422,29 +500,63 @@ const Workspace = (() => {
   const dlg = $('compareDialog');
 
   // Buraco → peça: a célula é fixa, as candidatas são peças das fotos
-  function openFindResults(data, cell) {
+  function openFindResults(data, cell, extra = {}) {
     if (!data.candidates || !data.candidates.length) {
-      notify('Nenhuma peça parecida nas fotos.', 'info');
+      notify(extra.remaining ? 'Nenhuma peça parecida nas primeiras fotos. Toque em "Procurar nas outras fotos".' : 'Nenhuma peça parecida nas fotos.', 'info');
       return;
     }
-    state.cmp = { kind: 'find', cell, items: data.candidates, index: 0, confident: data.confident, hole: data.hole, photos: data.photos };
+    state.cmp = {
+      kind: 'find', cell, items: data.candidates, index: 0, confident: data.confident, hole: data.hole, photos: data.photos,
+      remaining: extra.remaining || 0, more: extra.more || null, rejectedSigs: new Set(), loadingMore: false,
+    };
     state.photoZoom = false;
     renderCompare();
-    dlg.showModal();
+    if (!dlg.open) dlg.showModal();
+  }
+
+  // A busca parou numa peça "muito provável": continua nas fotos que sobraram, a pedido (ou ao recusar todas)
+  async function continueFind() {
+    const c = state.cmp;
+    if (!c || c.kind !== 'find' || !c.more || c.loadingMore) return false;
+    c.loadingMore = true;
+    renderCompare();
+    try {
+      const r = await c.more();
+      if (state.cmp !== c) return false;
+      c.remaining = r.remaining;
+      if (!r.remaining) c.more = null;
+      const fresh = (r.data ? r.data.candidates : []).filter((x) => !(x.sig && c.rejectedSigs.has(x.sig)));
+      if (fresh.length) {
+        c.items = fresh;
+        c.index = 0;
+        c.confident = r.data.confident;
+        c.photos = r.data.photos;
+      }
+      return fresh.length > 0;
+    } catch (err) {
+      notify(err.name === 'AbortError' ? 'O servidor demorou demais.' : err.message, 'error', 7000);
+      return false;
+    } finally {
+      if (state.cmp === c) { c.loadingMore = false; renderCompare(); }
+    }
   }
 
   // Peças → mapa: a peça é fixa, as candidatas são células
   function openLocate(piece) {
-    const items = liveCandidates(piece);
-    if (!items.length) {
+    if (!piece) return;
+    const live = liveCandidates(piece);
+    if (!live.length) {
       notify('Todas as células sugeridas para esta peça foram recusadas ou já estão montadas.', 'info');
       return;
     }
+    // A candidata que ficou com a peça vem primeiro; as outras seguem na ordem de semelhança
+    const { cand } = placeOf(piece);
+    const items = cand ? [cand, ...live.filter((c) => c !== cand)] : live;
     state.cmp = { kind: 'locate', piece, items, index: 0 };
     state.photoZoom = false;
     renderCompare();
     renderMarks();
-    dlg.showModal();
+    if (!dlg.open) dlg.showModal();
   }
 
   function cmpCell() {
@@ -460,7 +572,7 @@ const Workspace = (() => {
     const n = Grid.cellNumber(cell.col, cell.row, p.cols);
     const conf = c.kind === 'find'
       ? (c.index === 0 && c.confident ? 'sure' : item.score >= 70 ? 'maybe' : 'low')
-      : confidence(c.piece, item);
+      : confOf(c.piece, item);
     const zone = zoneName(zoneOf(cell.col, cell.row)).toLowerCase();
 
     if (c.kind === 'find') {
@@ -470,7 +582,7 @@ const Workspace = (() => {
       $('cmpYesText').textContent = 'É essa! Encaixei';
       $('cmpPieceCap').textContent = `foto ${item.photo + 1}`;
     } else {
-      $('cmpKicker').textContent = 'Onde vai esta peça';
+      $('cmpKicker').textContent = state.review ? `Conferindo as certas · ${state.review.index} de ${state.review.total}` : 'Onde vai esta peça';
       $('cmpTitle').textContent = `Vai na nº ${n}?`;
       $('cmpSub').textContent = `Coluna ${cell.col + 1} · Linha ${cell.row + 1} · ${zone}`;
       $('cmpYesText').textContent = 'É aqui! Encaixei';
@@ -500,6 +612,18 @@ const Workspace = (() => {
     $('cmpNote').classList.toggle('text-amber-300', item.shape_ok === false || item.edge_ok === false);
     $('cmpNote').classList.toggle('text-slate-400', !(item.shape_ok === false || item.edge_ok === false));
 
+    // Busca que parou cedo: oferece continuar nas outras fotos
+    const moreRow = $('cmpMoreRow');
+    const showMore = c.kind === 'find' && c.remaining > 0 && Boolean(c.more);
+    moreRow.classList.toggle('hidden', !showMore);
+    moreRow.classList.toggle('flex', showMore);
+    if (showMore) {
+      $('cmpMoreText').textContent = c.confident
+        ? `A busca parou na foto ${item.photo + 1}: a peça é muito provável. Faltam ${c.remaining} ${c.remaining === 1 ? 'foto' : 'fotos'} sem olhar.`
+        : `Ainda faltam ${c.remaining} ${c.remaining === 1 ? 'foto' : 'fotos'} sem olhar.`;
+      $('cmpMore').disabled = c.loadingMore;
+      $('cmpMore').textContent = c.loadingMore ? 'Procurando…' : `Procurar nas outras ${c.remaining}`;
+    }
     $('cmpPager').textContent = `${c.index + 1} de ${c.items.length}`;
     $('cmpPrev').disabled = c.index === 0;
     $('cmpNext').disabled = c.index >= c.items.length - 1;
@@ -601,26 +725,46 @@ const Workspace = (() => {
   $('cmpClose').addEventListener('click', () => dlg.close());
   dlg.addEventListener('close', () => {
     state.cmp = null;
+    state.review = null;
     renderMarks();
   });
+  $('cmpMore').addEventListener('click', continueFind);
   $('cmpPrev').addEventListener('click', () => { state.cmp.index--; renderCompare(); });
   $('cmpNext').addEventListener('click', () => { state.cmp.index++; renderCompare(); });
 
-  $('cmpNo').addEventListener('click', () => {
+  $('cmpNo').addEventListener('click', async () => {
     const c = state.cmp;
     const item = c.items[c.index];
-    if (c.kind === 'locate') state.rejected.add(`${c.piece.id}:${item.col},${item.row}`);
+    if (c.kind === 'locate') {
+      state.rejected.add(`${c.piece.id}:${item.col},${item.row}`);
+      refreshAssign();
+      persist();
+      // Conferindo as certas: "Não é" tira a peça da fila e passa para a próxima
+      if (state.review) {
+        renderLocate();
+        renderMarks();
+        openNextReview();
+        return;
+      }
+    } else if (item.sig) {
+      c.rejectedSigs.add(item.sig);
+    }
     if (c.index < c.items.length - 1) {
       c.index++;
       renderCompare();
       renderMarks();
       return;
     }
+    // Acabaram as candidatas: na busca por buraco, olha as fotos que sobraram antes de desistir
+    if (c.kind === 'find' && c.more) {
+      if (await continueFind()) return;
+    }
     dlg.close();
     notify(c.kind === 'find'
       ? 'Nenhuma das candidatas. Tente outra foto das peças ou a câmera ao vivo.'
       : 'Nenhuma das células sugeridas. Esta peça foi para "Sem lugar claro".', 'info', 6000);
     renderLocate();
+    renderMarks();
   });
 
   $('cmpYes').addEventListener('click', async () => {
@@ -632,12 +776,20 @@ const Workspace = (() => {
     btn.disabled = true;
     try {
       await registerFound({ cell, rotation: item.rotation_deg });
-      calibAdd(c.kind === 'find' ? item.sig : c.piece.sig, cell, item.rotation_deg);
-      if (c.kind === 'locate') state.placedPieces.add(c.piece.id);
-      dlg.close();
+      const sig = c.kind === 'find' ? item.sig : c.piece.sig;
+      calibAdd(sig, cell, item.rotation_deg);
+      // Marca a peça como encaixada no localizador (venha a confirmação de onde vier) e confere se a foto acabou
+      let piece = c.kind === 'locate' ? c.piece : null;
+      if (!piece && sig && state.located) piece = state.located.pieces.find((pc) => pc.sig === sig) || null;
+      if (piece) state.placedPieces.add(piece.id);
+      const photoIdx = c.kind === 'find' ? item.photo : c.piece.photo;
+      notePlaced(tablePhotos[photoIdx], sig);
+      refreshAssign();
       notify(`Peça nº ${Grid.cellNumber(cell.col, cell.row, currentPuzzle.cols)} encaixada.`, 'success');
       renderLocate();
       renderMarks();
+      persist();
+      if (state.review) openNextReview(); else dlg.close();
     } catch (err) {
       notify(`Erro ao registrar peça: ${err.message}`, 'error');
     } finally {
@@ -645,6 +797,178 @@ const Workspace = (() => {
     }
   });
 
+  // ---------- Foto concluída: todas as peças dela já foram encaixadas ----------
+  function notePlaced(photo, sig) {
+    if (!photo) return;
+    if (sig && !photo.confirmed.includes(sig)) photo.confirmed.push(sig);
+    let placedIn = 0, locatedIn = 0;
+    if (state.located) {
+      for (const pc of state.located.pieces) {
+        if (pc.photoId !== photo.id) continue;
+        locatedIn++;
+        if (state.placedPieces.has(pc.id)) placedIn++;
+      }
+    }
+    const wasDone = photo.done;
+    if (Search.updateDone(photo, { placedIn, locatedIn }) && !wasDone) {
+      notify(`Foto ${tablePhotos.indexOf(photo) + 1} concluída: todas as peças encaixadas. Ela sai das próximas buscas.`, 'success', 6000);
+    }
+    renderTablePhotos();
+  }
+
+  // ---------- Conferir as certas em sequência ----------
+  function sureList() {
+    if (!state.located) return [];
+    return state.located.pieces
+      .filter((pc) => !state.placedPieces.has(pc.id) && placeOf(pc).conf === 'sure')
+      .sort((a, b) => placeOf(b).cand.score - placeOf(a).cand.score);
+  }
+
+  function startReview() {
+    const queue = sureList().map((pc) => pc.id);
+    if (!queue.length) { notify('Nenhuma peça "certa" no momento.', 'info'); return; }
+    state.review = { queue, total: queue.length, index: 0 };
+    openNextReview();
+  }
+
+  function openNextReview() {
+    const r = state.review;
+    while (r && r.queue.length) {
+      const id = r.queue.shift();
+      const piece = state.located && state.located.pieces.find((pc) => pc.id === id);
+      // Peça que já foi encaixada ou deixou de ser "certa" (outra peça ficou com a célula) sai da fila
+      if (!piece || state.placedPieces.has(id) || placeOf(piece).conf !== 'sure') { r.total--; continue; }
+      r.index++;
+      openLocate(piece);
+      return true;
+    }
+    state.review = null;
+    if (dlg.open) dlg.close();
+    notify('Conferência das certas concluída.', 'success');
+    return false;
+  }
+
+  $('btnReviewSure').addEventListener('click', startReview);
+
+  // ---------- Sessão salva no aparelho ----------
+  function snapshot() {
+    if (!currentPuzzle || !isGridPuzzle(currentPuzzle)) return null;
+    if (!tablePhotos.length && !state.located) return null; // nada para guardar: apaga o registro
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      photos: tablePhotos.map((p) => ({ id: p.id, blob: p.blob, issues: p.issues, confirmed: p.confirmed, pieceCount: p.pieceCount, done: p.done })),
+      located: state.located,
+      locatedFor: state.locatedFor,
+      rejected: [...state.rejected],
+      placed: [...state.placedPieces],
+      parts: state.locateParts.filter((x) => x.data).map((x) => ({ ids: x.photos.map((p) => p.id), data: x.data })),
+      locateKey: state.locateKey,
+    };
+  }
+
+  function persist() {
+    if (state.persistOff || !currentPuzzle) return;
+    Session.schedule(currentPuzzle.id, snapshot);
+  }
+
+  // Antes de trocar de quebra-cabeça: grava o que estiver esperando e para de salvar até restaurar o próximo
+  function leavePuzzle() {
+    if (!state.persistOff && currentPuzzle) Session.schedule(currentPuzzle.id, snapshot, 0);
+    Session.flush();
+    state.persistOff = true;
+  }
+
+  async function restoreSession() {
+    const puzzle = currentPuzzle;
+    if (!puzzle || !isGridPuzzle(puzzle)) return;
+    const saved = await Session.load(puzzle.id);
+    if (currentPuzzle !== puzzle) return;
+    if (saved && Array.isArray(saved.photos) && saved.photos.length) {
+      tablePhotos.splice(0).forEach((x) => URL.revokeObjectURL(x.url));
+      for (const sp of saved.photos) {
+        tablePhotos.push({
+          id: sp.id, blob: sp.blob, url: URL.createObjectURL(sp.blob), issues: sp.issues || [],
+          confirmed: sp.confirmed || [], pieceCount: sp.pieceCount || 0, done: Boolean(sp.done),
+        });
+      }
+      state.located = saved.located || null;
+      state.locatedFor = saved.locatedFor || null;
+      state.rejected = new Set(saved.rejected || []);
+      state.placedPieces = new Set(saved.placed || []);
+      state.locateKey = saved.locateKey || null;
+      state.locateParts = (saved.parts || [])
+        .map((x) => ({ photos: x.ids.map((id) => tablePhotos.find((p) => p.id === id)).filter(Boolean), data: x.data }))
+        .filter((x) => x.photos.length);
+      renderTablePhotos();
+      refreshAssign();
+      renderLocate();
+      renderMarks();
+      const n = tablePhotos.length;
+      notify(`Sessão anterior recuperada: ${n} ${n === 1 ? 'foto' : 'fotos'}${state.located ? ' e o resultado do "onde vai cada peça"' : ''}.`, 'info', 5000);
+    }
+    state.persistOff = false;
+  }
+
+  // ---------- Mapa em tela cheia ----------
+  const mapBox = $('mapContainer');
+  let fullTimer = null;
+  state.mapFull = false;
+
+  function setMapFull(on) {
+    state.mapFull = on;
+    mapBox.classList.toggle('map-full', on);
+    document.body.classList.toggle('map-locked', on);
+    $('btnMapFull').setAttribute('aria-pressed', String(on));
+    $('btnMapFull').setAttribute('aria-label', on ? 'Sair da tela cheia' : 'Mapa em tela cheia');
+    $('iconMapExpand').classList.toggle('hidden', on);
+    $('iconMapShrink').classList.toggle('hidden', !on);
+    if (on) show($('mapFullBar'), 'flex'); else hide($('mapFullBar'), 'flex');
+    clearInterval(fullTimer);
+    if (on) { updateFullBar(); fullTimer = setInterval(updateFullBar, 300); }
+    // Reencaixa o mapa no novo tamanho depois que o navegador refaz o layout
+    requestAnimationFrame(() => requestAnimationFrame(() => mapViewer.reset()));
+  }
+
+  // Barra de baixo da tela cheia: o que está selecionado e a ação principal da aba
+  function updateFullBar() {
+    if (!state.mapFull || !currentPuzzle) return;
+    const info = $('mapFullInfo');
+    const act = $('btnMapFullAction');
+    const n = tablePhotos.filter((p) => !p.done).length;
+    if (state.mode === 'find') {
+      const searching = $('btnFind').disabled && !$('loading').classList.contains('hidden');
+      if (grid.cell) info.textContent = `Peça nº ${Grid.cellNumber(grid.cell.col, grid.cell.row, currentPuzzle.cols)} · coluna ${grid.cell.col + 1} · linha ${grid.cell.row + 1}`;
+      else info.textContent = 'Toque numa célula clara do mapa';
+      act.textContent = searching ? 'Procurando…' : n ? `Procurar nas ${n} ${n === 1 ? 'foto' : 'fotos'}` : 'Sem fotos';
+      act.disabled = searching || !grid.cell || !n;
+      act.dataset.action = 'find';
+    } else if (!state.located) {
+      info.textContent = n ? 'Descubra onde vai cada peça das fotos' : 'Anexe fotos das peças primeiro';
+      act.textContent = $('btnLocate').disabled && !$('locateLoading').classList.contains('hidden') ? 'Localizando…' : 'Localizar as peças';
+      act.disabled = !n || !grid.art || !$('locateLoading').classList.contains('hidden');
+      act.dataset.action = 'locate';
+    } else {
+      const sure = sureList().length;
+      info.textContent = `${sure} ${sure === 1 ? 'vai' : 'vão'} aqui · toque numa marca para comparar`;
+      act.textContent = sure ? `Conferir as ${sure} certas` : 'Nenhuma certa agora';
+      act.disabled = !sure;
+      act.dataset.action = 'review';
+    }
+  }
+
+  $('btnMapFullAction').addEventListener('click', () => {
+    const a = $('btnMapFullAction').dataset.action;
+    if (a === 'find') $('btnFind').click();
+    else if (a === 'locate') $('btnLocate').click();
+    else if (a === 'review') startReview();
+  });
+  $('btnMapFull').addEventListener('click', () => setMapFull(!state.mapFull));
+  document.addEventListener('keydown', (e) => {
+    // Esc fecha primeiro a janela de comparar (o navegador cuida disso); só depois a tela cheia
+    if (e.key === 'Escape' && state.mapFull && !dlg.open) setMapFull(false);
+  });
+
   setMode('find');
-  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, get mode() { return state.mode; } };
+  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();

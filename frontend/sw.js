@@ -1,4 +1,4 @@
-const CACHE_NAME = 'puzzlefinder-v13';
+const CACHE_NAME = 'puzzlefinder-v14';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -6,6 +6,8 @@ const ASSETS_TO_CACHE = [
   '/grid.js',
   '/workspace.js',
   '/camera.js',
+  '/search.js',
+  '/session.js',
   '/manifest.json',
   '/favicon.png',
   '/favicon-32.png',
