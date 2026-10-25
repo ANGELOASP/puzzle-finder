@@ -412,6 +412,8 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
             "candidates": [{
                 "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
                 "score": round(c["score"] * 100, 1),
+                # Diferença média de cor (Lab) com a célula: o app usa para dar cada célula a uma peça só
+                "distance": round(c["distance"], 2),
             } for c in cands],
             "confident": cands[0]["score"] >= grid_engine.LOCATE_CONFIDENT,
         })
