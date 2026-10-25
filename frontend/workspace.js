@@ -182,10 +182,10 @@ const Workspace = (() => {
     if (state.locateKey !== key) { state.locateParts = []; state.locateKey = key; }
     const parts = state.locateParts;
     const calib = calibPayload();
-    const buildForm = (blobs) => {
+    const buildForm = (chunk) => {
       const form = new FormData();
-      appendTablePhotos(form, blobs);
-      form.append('box_file', grid.artBlob, 'art.jpg');
+      Search.appendPhotos(form, chunk);
+      Search.appendArt(form);
       form.append('cols', p.cols);
       form.append('rows', p.rows);
       form.append('top_k', '5');
@@ -857,7 +857,7 @@ const Workspace = (() => {
     return {
       v: 1,
       savedAt: Date.now(),
-      photos: tablePhotos.map((p) => ({ id: p.id, blob: p.blob, issues: p.issues, confirmed: p.confirmed, pieceCount: p.pieceCount, done: p.done })),
+      photos: tablePhotos.map((p) => ({ id: p.id, blob: p.blob, issues: p.issues, confirmed: p.confirmed, pieceCount: p.pieceCount, done: p.done, key: p.key })),
       located: state.located,
       locatedFor: state.locatedFor,
       rejected: [...state.rejected],
@@ -889,7 +889,7 @@ const Workspace = (() => {
       for (const sp of saved.photos) {
         tablePhotos.push({
           id: sp.id, blob: sp.blob, url: URL.createObjectURL(sp.blob), issues: sp.issues || [],
-          confirmed: sp.confirmed || [], pieceCount: sp.pieceCount || 0, done: Boolean(sp.done),
+          confirmed: sp.confirmed || [], pieceCount: sp.pieceCount || 0, done: Boolean(sp.done), key: sp.key || null,
         });
       }
       state.located = saved.located || null;

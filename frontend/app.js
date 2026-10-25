@@ -1288,10 +1288,10 @@ async function holeBlob() {
 }
 
 // Requisição da busca por célula do mapa
-async function buildFindCellForm(tableBlobs, { annotate = true } = {}) {
+async function buildFindCellForm(tableItems, { annotate = true } = {}) {
   const formData = new FormData();
-  appendTablePhotos(formData, tableBlobs);
-  formData.append('box_file', grid.artBlob, 'art.jpg');
+  Search.appendPhotos(formData, tableItems); // fotos (com chave do servidor ou arquivo) ou quadros soltos da câmera
+  Search.appendArt(formData);
   formData.append('cols', currentPuzzle.cols);
   formData.append('rows', currentPuzzle.rows);
   formData.append('col', grid.cell.col);
@@ -1412,7 +1412,7 @@ btnFind.addEventListener('click', async () => {
       return;
     }
     const path = `/api/${byCell ? 'find-cell' : 'find-piece'}`;
-    const build = (blobs) => (byCell ? buildFindCellForm(blobs, { annotate: false }) : buildFindPieceForm(blobs));
+    const build = (chunk) => (byCell ? buildFindCellForm(chunk, { annotate: false }) : buildFindPieceForm(chunk.map(p => p.blob)));
     const progress = ({ from, to, total }) => {
       if (total <= PHOTOS_PER_REQUEST) return;
       loadingText.textContent = `Analisando as fotos ${from + 1}–${to} de ${total}…`;
@@ -1574,6 +1574,7 @@ const grid = {
   boxBitmap: null,  // foto da caixa (canvas)
   art: null,        // arte retificada: exatamente cols × rows células
   artBlob: null,
+  artKey: null, // chave da arte no servidor: depois da 1ª busca ele a guarda e o app não a reenvia
   scanMap: null,    // '1' montada, '0' faltando, '?' desconhecida (linha por linha)
   cell: null,       // {col, row} escolhida
   board: null,      // última foto do tabuleiro escaneado {img, corners}: dá o formato dos buracos
@@ -1605,7 +1606,7 @@ const mapViewer = new InteractiveImageViewer({
 });
 
 function exitGridMode() {
-  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = null;
+  grid.boxBitmap = grid.art = grid.artBlob = grid.scanMap = grid.cell = grid.board = grid.hole = grid.artKey = null;
   hide(gridCard);
   show(legacyTarget, 'grid');
   Workspace.onGridMode(false);
@@ -1644,6 +1645,7 @@ async function buildArt() {
   const cellH = Math.max(12, Math.round(cellW * Grid.cellAspect(p, grid.boxBitmap, corners)));
   grid.art = Grid.rectify(grid.boxBitmap, corners, { cols: p.cols, rows: p.rows, cellW, cellH });
   grid.artBlob = await Grid.canvasToBlob(grid.art, 0.92);
+  grid.artKey = null;
   hide(gridSetup);
   show(mapContainer, 'flex');
   await renderMapImage(true);

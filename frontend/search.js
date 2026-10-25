@@ -23,6 +23,28 @@ const Search = (() => {
     }
   }
 
+  // Monta as fotos de um pedido. Foto que o servidor já separou (tem `key`) vai só como referência, sem reenviar o
+  // arquivo; as outras vão como arquivo. Aceita também Blobs soltos (quadro da câmera ao vivo).
+  function appendPhotos(form, photos) {
+    const refs = [];
+    let uploads = 0;
+    for (const p of photos) {
+      if (!(p instanceof Blob) && p.key) {
+        refs.push({ key: p.key });
+      } else {
+        form.append('table_files', p instanceof Blob ? p : p.blob, `pecas-${uploads + 1}.jpg`);
+        refs.push({ upload: uploads++ });
+      }
+    }
+    form.append('photo_refs', JSON.stringify(refs));
+  }
+
+  // Arte da caixa: depois da 1ª resposta o servidor devolve a chave dela e o app só manda a chave
+  function appendArt(form) {
+    if (grid.artKey) form.append('box_key', grid.artKey);
+    else form.append('box_file', grid.artBlob, 'art.jpg');
+  }
+
   /**
    * Envia as fotos em lotes, um depois do outro.
    * `parts`: acumulador [{ photos, data }]. Ele é preenchido lote a lote, então depois de uma falha (ou de uma
@@ -37,9 +59,23 @@ const Search = (() => {
     for (let start = 0; start < todo.length; start += PHOTOS_PER_REQUEST) {
       const chunk = todo.slice(start, start + PHOTOS_PER_REQUEST);
       if (onBatch) onBatch({ from: done.size + start, to: done.size + start + chunk.length, total: photos.length });
-      const res = await fetchWithRetry(`${getApiUrl()}${path}`, {
-        method: 'POST', headers: await authHeaders(), body: await buildForm(chunk.map((p) => p.blob)),
+      const send = async () => fetchWithRetry(`${getApiUrl()}${path}`, {
+        method: 'POST', headers: await authHeaders(), body: await buildForm(chunk),
       }, timeoutMs);
+      let res = await send();
+      if (res.status === 409) {
+        // O servidor não guardava mais essas fotos (reiniciou, ou o cache encheu): reenvia o arquivo delas
+        let missing = [];
+        let missingBox = false;
+        try {
+          const detail = (await res.json()).detail || {};
+          missing = detail.missing || [];
+          missingBox = Boolean(detail.missing_box);
+        } catch (_) { /* resposta sem lista */ }
+        if (missingBox) grid.artKey = null;
+        chunk.forEach((p) => { if (!p.key || missing.includes(p.key)) p.key = null; });
+        res = await send();
+      }
       if (res.status === 404) {
         skipped += chunk.length;
         lastError = new Error(await apiErrorMessage(res, errorText));
@@ -49,7 +85,13 @@ const Search = (() => {
       }
       if (!res.ok) throw new Error(await apiErrorMessage(res, errorText));
       const data = await res.json();
-      chunk.forEach((p, i) => { const info = (data.photos || [])[i]; if (info) p.pieceCount = info.pieces; });
+      if (data.box_key) grid.artKey = data.box_key;
+      chunk.forEach((p, i) => {
+        const info = (data.photos || [])[i];
+        if (!info) return;
+        p.pieceCount = info.pieces;
+        if (info.key) p.key = info.key; // da próxima vez o app manda só a chave
+      });
       parts.push({ photos: chunk, data });
       if (onPart) onPart(parts);
       const rest = todo.slice(start + PHOTOS_PER_REQUEST);
@@ -141,7 +183,7 @@ const Search = (() => {
   const newId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
 
   function newPhoto(blob, issues = []) {
-    return { id: newId(), blob, url: URL.createObjectURL(blob), issues, confirmed: [], pieceCount: 0, done: false };
+    return { id: newId(), blob, url: URL.createObjectURL(blob), issues, confirmed: [], pieceCount: 0, done: false, key: null };
   }
 
   // Foto concluída: todas as peças dela já foram encaixadas. Ela sai das próximas buscas (dá para voltar a incluir).
@@ -157,5 +199,5 @@ const Search = (() => {
     return true;
   }
 
-  return { run, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
+  return { run, appendPhotos, appendArt, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
 })();
