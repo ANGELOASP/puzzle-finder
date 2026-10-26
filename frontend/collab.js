@@ -12,6 +12,7 @@ const Collab = (() => {
   const BUCKET = 'puzzle-photos';
   let timer = null;
   let pushTimer = null;
+  let readyTimer = null;
   let pid = null;           // quebra-cabeça sincronizado
   let busy = false;
   let ready = false;        // só sincroniza depois de a sessão salva deste aparelho voltar (senão uma sobrescreve a outra)
@@ -143,6 +144,7 @@ const Collab = (() => {
     const { data: rows, error } = await supabaseClient.from('puzzle_photos').select('*').eq('puzzle_id', pid).order('created_at');
     if (error) { lastError = error.message; return false; }
     let changed = false;
+    const toDownload = [];
     for (const row of rows) {
       const local = tablePhotos.find((p) => p.id === row.id);
       if (row.deleted) {
@@ -151,17 +153,11 @@ const Collab = (() => {
         continue;
       }
       if (!local) {
-        if (removedIds.has(row.id)) continue; // removida aqui: o envio (push) apaga no banco
-        if (tablePhotos.length >= MAX_TABLE_PHOTOS) continue;
-        const { data: blob, error: e2 } = await supabaseClient.storage.from(BUCKET).download(row.path);
-        if (e2 || !blob) { lastError = e2 ? e2.message : 'foto não baixou'; continue; }
-        const photo = Search.newPhoto(blob);
-        photo.id = row.id;
-        applyRemote(photo, row);
-        tablePhotos.push(photo);
-        changed = true;
-      } else if (known.has(row.id) && known.get(row.id) !== sig(local)) {
-        // alteração local ainda não enviada: o envio (push) vence; senão adota o que veio
+        if (!removedIds.has(row.id)) toDownload.push(row); // removida aqui: o envio (push) apaga no banco
+        continue;
+      }
+      if (known.has(row.id) && known.get(row.id) !== sig(local)) {
+        // alteração local ainda não enviada: o envio (push) vence
       } else if (sig({ done: row.done, confirmed: row.confirmed || [], userCount: row.user_count, countOk: row.count_ok }) !== sig(local)) {
         applyRemote(local, row);
         changed = true;
@@ -170,6 +166,28 @@ const Collab = (() => {
       }
     }
     if (changed) { renderTablePhotos(); Workspace.onPhotosChanged(); }
+
+    // Fotos novas: baixa 3 por vez e mostra cada uma assim que chega (são MB por foto; no celular leva um tempo)
+    const room = Math.max(0, MAX_TABLE_PHOTOS - tablePhotos.length);
+    const queue = toDownload.slice(0, room);
+    let done = 0;
+    const worker = async () => {
+      while (queue.length && pid) {
+        const row = queue.shift();
+        status(`Baixando as fotos dos outros aparelhos… ${done + 1} de ${toDownload.length}`);
+        const { data: blob, error: e2 } = await supabaseClient.storage.from(BUCKET).download(row.path);
+        done++;
+        if (e2 || !blob) { lastError = e2 ? e2.message : 'a foto não baixou'; continue; }
+        if (tablePhotos.some((p) => p.id === row.id)) continue;
+        const photo = Search.newPhoto(blob);
+        photo.id = row.id;
+        applyRemote(photo, row);
+        tablePhotos.push(photo);
+        renderTablePhotos();
+        Workspace.onPhotosChanged();
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
     return true;
   }
 
@@ -237,6 +255,9 @@ const Collab = (() => {
     known.clear();
     removedIds.clear();
     timer = setInterval(tick, POLL_MS);
+    status('Sincronizando com os outros aparelhos…');
+    // Se a sessão salva demorar demais para voltar, começa mesmo assim
+    readyTimer = setTimeout(ready_, 8000);
   }
 
   // A sessão salva deste aparelho voltou: as fotos daqui sobem e as de lá descem
@@ -249,7 +270,7 @@ const Collab = (() => {
   function removed(id) { if (pid) removedIds.add(id); }
 
   function stop() {
-    clearInterval(timer); clearTimeout(pushTimer);
+    clearInterval(timer); clearTimeout(pushTimer); clearTimeout(readyTimer);
     pid = null; ready = false; known.clear(); removedIds.clear();
     status('');
   }

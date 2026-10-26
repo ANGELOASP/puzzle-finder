@@ -1536,6 +1536,7 @@ btnFind.addEventListener('click', async () => {
 // FOTO DO BURACO · BUSCA LOCAL
 // Foto de perto de UM buraco: o servidor mede o formato exato dele e compara as bordas das vizinhas com as das peças.
 // ==========================================
+const btnHoleShot = document.getElementById('btnHoleShot');
 const holeDialog = document.getElementById('holeDialog');
 const holeCanvas = document.getElementById('holeCanvas');
 const holeError = document.getElementById('holeError');
@@ -1578,24 +1579,24 @@ function showHoleError(msg) {
   holeError.classList.toggle('hidden', !msg);
 }
 
-document.getElementById('btnHolePhoto').addEventListener('click', () => {
+function startHolePhoto() {
   if (!gridActive() || !grid.cell) {
     notify('Primeiro escolha no mapa a peça que falta: a busca local procura a peça daquele buraco.', 'info');
     document.getElementById('step1Title').scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
-  if (!tablePhotos.some(p => !p.done)) {
-    notify('Anexe as fotos das peças soltas (as que ainda não foram concluídas) para procurar nelas.', 'info', 6000);
-    return;
-  }
-  holeInput.click();
-});
+  // A câmera abre sempre; as fotos das peças só são exigidas na hora de buscar
+  holeInput.click(); // abre a câmera direto (capture); "Da galeria" no diálogo escolhe uma foto já tirada
+}
+document.getElementById('btnHolePhoto').addEventListener('click', startHolePhoto);
+btnHoleShot.addEventListener('click', startHolePhoto);
 holeRetake.addEventListener('click', () => holeInput.click());
+document.getElementById('holeGallery').addEventListener('click', () => document.getElementById('holeInputGallery').click());
 document.getElementById('holeClose').addEventListener('click', () => holeDialog.close());
 
-holeInput.addEventListener('change', async () => {
-  const file = holeInput.files && holeInput.files[0];
-  holeInput.value = '';
+for (const input of [holeInput, document.getElementById('holeInputGallery')]) input.addEventListener('change', async () => {
+  const file = input.files && input.files[0];
+  input.value = '';
   if (!file) return;
   try {
     const exif = await Camera.readExif(file);
@@ -1631,7 +1632,7 @@ holeGo.addEventListener('click', async () => {
   if (hole.busy || !hole.blob || !hasTarget()) return;
   const active = tablePhotos.filter(p => !p.done);
   if (!active.length) {
-    showHoleError('Todas as fotos estão concluídas. Toque no selo "concluída" de uma foto para voltar a incluí-la.');
+    showHoleError(tablePhotos.length ? 'Todas as fotos estão concluídas. Toque no selo "concluída" de uma foto para voltar a incluí-la.' : 'Ainda não há fotos das peças neste aparelho. Anexe-as (ou espere as do outro aparelho chegarem) e toque em Buscar de novo.');
     return;
   }
   showHoleError('');
@@ -1870,6 +1871,7 @@ function selectCell(col, row) {
   mapPin.classList.remove('hidden');
   btnToggleCell.textContent = state === '1' ? 'Marcar como faltando' : 'Marcar como montada';
   show(btnToggleCell);
+  show(btnHoleShot);
   checkReady();
 }
 
