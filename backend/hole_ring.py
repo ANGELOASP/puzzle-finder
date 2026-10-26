@@ -51,7 +51,7 @@ def _corr(a, b, w):
     return float(np.mean(out)) if out else None
 
 
-def neighbour_pairs(hole, box_bgr, cols, rows, col, row, scan_map=None, aspect=1.0):
+def neighbour_pairs(hole, box_bgr, cols, rows, col, row, scan_map=None, aspect=1.0, full=None):
     """
     `hole`: resultado de local_search.segment_hole. `box_bgr`: arte retificada. (col, row): célula do buraco.
     Devolve {"rotation", "pairs": [{col, row, rotation: 0, sig}], "corr": [...]} ou {"pairs": []} sem certeza.
@@ -83,15 +83,35 @@ def neighbour_pairs(hole, box_bgr, cols, rows, col, row, scan_map=None, aspect=1
             items.append((c, r, d, wt, cr))
             total += cr
             n += 1
-        tries.append((total, n, items, rot))
+        tries.append((total, n, items, rot, pts, sx, sy))
     tries.sort(key=lambda t: -t[0])
     best, second = tries[0], tries[1]
     if best[1] < 2 or best[0] - second[0] < MIN_MARGIN * best[1]:
         return {"pairs": []}
     pairs = []
+    fim = None
+    if full is not None:
+        fim = np.ascontiguousarray(np.rot90(full, -best[3]))
     for c, r, d, wt, cr in best[2]:
         if cr < MIN_CORR:
             continue
         arr = np.dstack([np.clip(d, 0, 255), np.clip(wt * 255, 0, 255)]).round().astype(np.uint8)
-        pairs.append({"col": c, "row": r, "rotation": 0, "sig": base64.b64encode(arr.tobytes()).decode("ascii")})
+        pair = {"col": c, "row": r, "rotation": 0, "sig": base64.b64encode(arr.tobytes()).decode("ascii")}
+        if fim is not None:
+            pair["patch"] = _patch_jpeg(fim, hole["scale"], best[4], best[5], best[6], c - col, r - row, aspect)
+        pairs.append(pair)
     return {"rotation": best[3] * 90, "pairs": pairs, "corr": [round(it[4], 2) for it in best[2]]}
+
+
+PATCH_W = 160
+
+
+def _patch_jpeg(fim, scale, centre, sx, sy, dc, dr, aspect):
+    """Recorte nítido (resolução da foto enviada) da célula vizinha, já na orientação da arte, em JPEG base64."""
+    cx, cy = (centre[0] + dc * sx) / scale, (centre[1] + dr * sy) / scale
+    w, h = max(8, int(round(sx / scale))), max(8, int(round(sy / scale)))
+    crop = cv2.getRectSubPix(fim, (w, h), (float(cx), float(cy)))
+    out_h = max(8, int(round(PATCH_W * h / w)))
+    crop = cv2.resize(crop, (PATCH_W, out_h), interpolation=cv2.INTER_AREA if w > PATCH_W else cv2.INTER_CUBIC)
+    ok, enc = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return base64.b64encode(enc.tobytes()).decode("ascii")
