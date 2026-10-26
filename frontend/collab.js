@@ -14,8 +14,10 @@ const Collab = (() => {
   let pushTimer = null;
   let pid = null;           // quebra-cabeça sincronizado
   let busy = false;
-  let available = true;     // false se as tabelas ainda não existem (migração não rodada)
+  let ready = false;        // só sincroniza depois de a sessão salva deste aparelho voltar (senão uma sobrescreve a outra)
+  let lastError = null;
   const known = new Map();  // id da foto → assinatura do que já foi enviado/recebido
+  const removedIds = new Set(); // fotos que o usuário removeu aqui (só estas são apagadas nos outros aparelhos)
 
   // ---------- Convite ----------
   function readInviteFromUrl() {
@@ -139,7 +141,7 @@ const Collab = (() => {
 
   async function pull() {
     const { data: rows, error } = await supabaseClient.from('puzzle_photos').select('*').eq('puzzle_id', pid).order('created_at');
-    if (error) { available = false; return false; }
+    if (error) { lastError = error.message; return false; }
     let changed = false;
     for (const row of rows) {
       const local = tablePhotos.find((p) => p.id === row.id);
@@ -149,10 +151,10 @@ const Collab = (() => {
         continue;
       }
       if (!local) {
-        if (known.has(row.id)) continue; // removida aqui: o envio (push) apaga no banco
+        if (removedIds.has(row.id)) continue; // removida aqui: o envio (push) apaga no banco
         if (tablePhotos.length >= MAX_TABLE_PHOTOS) continue;
         const { data: blob, error: e2 } = await supabaseClient.storage.from(BUCKET).download(row.path);
-        if (e2 || !blob) continue;
+        if (e2 || !blob) { lastError = e2 ? e2.message : 'foto não baixou'; continue; }
         const photo = Search.newPhoto(blob);
         photo.id = row.id;
         applyRemote(photo, row);
@@ -178,21 +180,22 @@ const Collab = (() => {
       if (!known.has(p.id)) {
         const path = pathOf(p);
         const { error } = await supabaseClient.storage.from(BUCKET).upload(path, p.blob, { contentType: 'image/jpeg', upsert: true });
-        if (error) { available = false; return; }
+        if (error) { lastError = `envio da foto: ${error.message}`; continue; }
         const { error: e2 } = await supabaseClient.from('puzzle_photos').upsert([rowOf(p, path)]);
-        if (e2) { available = false; return; }
+        if (e2) { lastError = `registro da foto: ${e2.message}`; continue; }
         known.set(p.id, sig(p));
       } else if (known.get(p.id) !== sig(p)) {
         const { error } = await supabaseClient.from('puzzle_photos').upsert([rowOf(p, pathOf(p))]);
-        if (!error) known.set(p.id, sig(p));
+        if (!error) known.set(p.id, sig(p)); else lastError = error.message;
       }
     }
-    // fotos removidas aqui
-    for (const id of [...known.keys()]) {
-      if (known.get(id) === 'deleted' || tablePhotos.some((p) => p.id === id)) continue;
-      await supabaseClient.from('puzzle_photos').update({ deleted: true, updated_at: new Date().toISOString() }).eq('id', id);
+    // fotos que o usuário removeu aqui
+    for (const id of [...removedIds]) {
+      const { error } = await supabaseClient.from('puzzle_photos').update({ deleted: true, updated_at: new Date().toISOString() }).eq('id', id);
+      if (error) { lastError = error.message; continue; }
       await supabaseClient.storage.from(BUCKET).remove([`${pid}/${id}.jpg`]);
       known.set(id, 'deleted');
+      removedIds.delete(id);
     }
   }
 
@@ -206,33 +209,54 @@ const Collab = (() => {
     if (count != null && count !== currentFoundCount) { currentFoundCount = count; updateProgressBar(); }
   }
 
-  async function tick() {
-    if (busy || !pid || !supabaseClient || document.hidden || !available) return;
+  function status(text, bad) {
+    const el = $('syncStatus');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('hidden', !text);
+    el.classList.toggle('text-amber-300', Boolean(bad));
+    el.classList.toggle('text-slate-500', !bad);
+  }
+
+  async function tick(force) {
+    if (busy || !ready || !pid || !supabaseClient || (document.hidden && force !== true)) return;
     busy = true;
+    lastError = null;
     try {
       if (await pull()) { await push(); await pullPuzzle(); }
-    } catch (_) { /* offline: tenta no próximo ciclo */ } finally { busy = false; }
+    } catch (err) { lastError = err.message || String(err); } finally { busy = false; }
+    const n = [...known.values()].filter((v) => v !== 'deleted').length;
+    status(lastError ? `Sincronização com os outros aparelhos falhou: ${lastError}` : `Sincronizado com os outros aparelhos · ${n} ${n === 1 ? 'foto' : 'fotos'} no projeto`, Boolean(lastError));
   }
 
   function start(puzzle) {
     stop();
     if (!puzzle || !isGridPuzzle(puzzle)) return;
     pid = puzzle.id;
-    available = true;
+    ready = false;
     known.clear();
-    // Espera a sessão salva neste aparelho voltar (as fotos daqui sobem junto com as de lá)
-    setTimeout(tick, 2500);
+    removedIds.clear();
     timer = setInterval(tick, POLL_MS);
   }
 
+  // A sessão salva deste aparelho voltou: as fotos daqui sobem e as de lá descem
+  function ready_() {
+    if (!pid) return;
+    ready = true;
+    tick(true);
+  }
+
+  function removed(id) { if (pid) removedIds.add(id); }
+
   function stop() {
     clearInterval(timer); clearTimeout(pushTimer);
-    pid = null; known.clear();
+    pid = null; ready = false; known.clear(); removedIds.clear();
+    status('');
   }
 
   // Chamado a cada mudança de foto/confirmação: envia logo em vez de esperar o próximo ciclo
   function touch() {
-    if (!pid) return;
+    if (!pid || !ready) return;
     clearTimeout(pushTimer);
     pushTimer = setTimeout(tick, 1500);
   }
@@ -243,5 +267,7 @@ const Collab = (() => {
   $('shareCreate').addEventListener('click', createInvite);
   $('shareSend').addEventListener('click', shareLink);
 
-  return { onSignedIn, createAccount, showInviteBanner, start, stop, touch, pendingInvite };
+  $('syncStatus').addEventListener('click', () => tick(true));
+
+  return { onSignedIn, createAccount, showInviteBanner, start, stop, touch, pendingInvite, ready: ready_, removed };
 })();
