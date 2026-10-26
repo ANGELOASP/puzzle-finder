@@ -960,6 +960,18 @@ const Workspace = (() => {
       cur = step; cx0 = 0; cy0 = 0; cw1 = step.width; ch1 = step.height;
     }
     ctx.drawImage(cur, cx0, cy0, cw1, ch1, ox, oy, sw * k, sh * k);
+    // Vizinhas REAIS (de fotos de buraco) por cima da arte da caixa: nítidas e na cor da câmera
+    let real = 0;
+    ctx.imageSmoothingQuality = 'high';
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dc && !dr) continue; // a célula do buraco está vazia: só a caixa mostra o que falta
+      const c = cell.col + dc, r = cell.row + dr;
+      const patch = c >= 0 && r >= 0 && c < p.cols && r < p.rows ? Atlas.get(c, r) : null;
+      if (!patch) continue;
+      ctx.drawImage(patch, ox + (dc + pad) * cw * k, oy + (dr + pad) * ch * k, cw * k, ch * k);
+      real++;
+    }
+    $('cmpArtLabel').textContent = real ? `Na caixa + ${real} ${real === 1 ? 'vizinha real' : 'vizinhas reais'}` : 'Na caixa';
     sharpen(ctx, size);
     const rx = ox + pad * cw * k, ry = oy + pad * ch * k;
     ctx.lineWidth = 6;
@@ -1314,5 +1326,10 @@ const Workspace = (() => {
     return { pieces: state.located ? state.located.pieces : [], placed: state.placedPieces, placeOf, openLocate };
   }
 
-  return { addRing, remoteChanged, bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
+  // Chegaram recortes reais novos: redesenha a comparação aberta
+  function atlasChanged() {
+    if (state.cmp && dlg.open) drawArt(cmpCell());
+  }
+
+  return { atlasChanged, addRing, remoteChanged, bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();

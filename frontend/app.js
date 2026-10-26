@@ -642,6 +642,7 @@ puzzleSelect.addEventListener('change', (e) => {
 // (Session) e a do próximo é restaurada em Workspace.onGridMode
 function resetPhotos() {
   Collab.stop();
+  Atlas.stop();
   Workspace.leavePuzzle();
   tablePhotos.splice(0).forEach(p => URL.revokeObjectURL(p.url));
   renderTablePhotos();
@@ -651,6 +652,7 @@ async function onPuzzleSelected(puzzle) {
   resetPhotos();
   currentPuzzle = puzzle;
   Collab.start(puzzle);
+  Atlas.start(isGridPuzzle(puzzle) ? puzzle : null);
   exitGridMode();
   show(puzzleProgressContainer);
   puzzleProgressName.textContent = puzzle.name;
@@ -1838,7 +1840,7 @@ holeGo.addEventListener('click', async () => {
     const data = Search.mergeLocal(parts);
     setServiceStatus('api', 'ok', 'Online');
     // As vizinhas reais viram referência de cor da caixa para as próximas buscas
-    if (hole.ring && hole.ring.length) { Workspace.addRing(hole.ring, cell); hole.ring = []; }
+    if (hole.ring && hole.ring.length) { Workspace.addRing(hole.ring, cell); Atlas.add(hole.ring.filter(p => !(p.col === cell.col && p.row === cell.row))); hole.ring = []; }
     hole.busy = false;
     holeDialog.close();
     Workspace.openFindResults(data, cell, { mode: 'hole' });

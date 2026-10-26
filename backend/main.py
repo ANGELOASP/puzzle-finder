@@ -650,7 +650,7 @@ def process_hole_shape(data, seed, box_bytes=None, box_key=None, cols=None, rows
     ring = None
     if box_bytes is not None:
         try:
-            ring = hole_ring.neighbour_pairs(hole, img_bytes_to_cv2(box_bytes), cols, rows, col, row, scan_map, aspect)
+            ring = hole_ring.neighbour_pairs(hole, img_bytes_to_cv2(box_bytes), cols, rows, col, row, scan_map, aspect, full=img)
         except Exception:  # a calibração é um extra: nunca derruba a medição do buraco
             ring = None
     return {
