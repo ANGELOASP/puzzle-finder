@@ -108,6 +108,13 @@ const Workspace = (() => {
     renderMarks();
   }
 
+  // Outro participante mudou o mapa: refaz a atribuição e as marcas
+  function remoteChanged() {
+    refreshAssign();
+    renderLocate();
+    renderMarks();
+  }
+
   function onPhotosChanged() {
     refresh();
     if (state.located) {
@@ -1132,6 +1139,7 @@ const Workspace = (() => {
   function persist() {
     if (state.persistOff || !currentPuzzle) return;
     Session.schedule(currentPuzzle.id, snapshot);
+    Collab.touch();
   }
 
   // Antes de trocar de quebra-cabeça: grava o que estiver esperando e para de salvar até restaurar o próximo
@@ -1239,5 +1247,5 @@ const Workspace = (() => {
     return { pieces: state.located ? state.located.pieces : [], placed: state.placedPieces, placeOf, openLocate };
   }
 
-  return { bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
+  return { remoteChanged, bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();

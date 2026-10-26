@@ -244,6 +244,7 @@
 
       <!-- Entrar -->
       <form id="loginForm" class="hidden space-y-4" novalidate>
+        <p id="inviteBanner" class="hidden text-sm text-emerald-200 bg-emerald-400/10 ring-1 ring-inset ring-emerald-400/30 rounded-xl px-3 py-2.5">Você foi convidado para um quebra-cabeça compartilhado. Entre ou crie a sua conta para participar.</p>
         <div>
           <h1 class="text-3xl font-extrabold tracking-tight">Entrar</h1>
           <p class="text-sm text-slate-400 mt-1.5">Seus quebra-cabeças e o progresso ficam salvos na sua conta.</p>
@@ -265,8 +266,9 @@
         <button type="submit" id="btnLogin" class="w-full h-12 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[15px] transition active:scale-[0.98] disabled:opacity-60 disabled:cursor-wait">Entrar</button>
         <div class="flex items-center justify-between gap-3 text-sm">
           <button type="button" id="btnForgotPassword" class="h-10 -mx-1 px-1 font-semibold text-slate-300 hover:text-white">Esqueci minha senha</button>
+          <button type="button" id="btnSignup" class="h-10 -mx-1 px-1 font-semibold text-emerald-300 hover:text-emerald-200">Criar conta</button>
         </div>
-        <p class="text-xs text-slate-500 pt-2">Acesso por convite: quem administra o app cria a sua conta.</p>
+        <p class="text-xs text-slate-500 pt-2">Sem conta? Preencha e-mail e senha e toque em Criar conta.</p>
       </form>
 
       <!-- Definir nova senha (link de recuperação do e-mail) -->
@@ -510,6 +512,22 @@
           <button type="button" class="js-learn mt-3 block text-xs font-semibold text-slate-400 underline underline-offset-2 h-8">Aprendizado: acerto real das buscas</button>
         </div>
         <div id="findSlotGrid" class="panel"></div>
+        <details id="multiOpen" class="panel md:col-span-2">
+          <summary class="cursor-pointer font-bold text-[15px] h-9 flex items-center">Busca múltipla · fila de buscas</summary>
+          <div class="mt-2 flex flex-col gap-2">
+            <p class="text-xs text-slate-400 leading-snug">Junte várias peças e o app busca uma depois da outra. Você confere os resultados quando quiser.</p>
+            <div class="flex flex-wrap gap-2 items-center">
+              <button type="button" id="multiAddCurrent" class="btn-quiet !h-10">Adicionar a peça escolhida</button>
+              <input id="multiNumbers" inputmode="numeric" placeholder="nºs: 547, 548, 1020" aria-label="Números das peças" class="w-44 h-10 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-sm px-3 rounded-xl">
+              <button type="button" id="multiAddNumbers" class="btn-quiet !h-10">Adicionar</button>
+            </div>
+            <div id="multiCard"><ul id="multiList"></ul></div>
+            <div class="flex gap-2">
+              <button type="button" id="multiRun" class="btn-primary h-11 flex-1">Fila vazia</button>
+              <button type="button" id="multiClear" class="btn-quiet !h-11">Limpar</button>
+            </div>
+          </div>
+        </details>
       </div>
 
       <!-- Peças → mapa -->
@@ -797,6 +815,9 @@
           <svg class="icon w-4 h-4"><use href="#i-logout"/></svg> Sair
         </button>
       </div>
+      <button type="button" id="btnShare" class="btn-quiet w-full mb-4">
+        <svg class="icon w-4 h-4"><use href="#i-share"/></svg>Compartilhar este quebra-cabeça (convidar pessoas)
+      </button>
 
       <div class="space-y-2 mb-5 text-sm">
         <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950 ring-1 ring-inset ring-slate-800">
@@ -957,6 +978,30 @@
     </div>
   </dialog>
 
+
+  <dialog id="shareDialog" aria-labelledby="shareTitle" class="bg-slate-950 text-slate-100 p-0 w-[min(92vw,30rem)] rounded-2xl ring-1 ring-slate-800">
+    <div class="p-4 flex flex-col gap-3">
+      <div class="flex items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Projeto compartilhado</p>
+          <h2 id="shareTitle" class="text-xl font-extrabold tracking-tight leading-tight">Convidar pessoas</h2>
+          <p id="shareName" class="text-sm text-slate-400 mt-0.5 truncate"></p>
+        </div>
+        <button type="button" id="shareClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="text-sm text-slate-300 leading-snug">Quem abrir o link entra (ou cria a conta) e passa a ver as mesmas fotos, o mesmo mapa e as mesmas peças encontradas. Todos podem buscar ao mesmo tempo.</p>
+      <button type="button" id="shareCreate" class="btn-primary h-12">Criar link de convite</button>
+      <div class="flex gap-2">
+        <input id="shareLink" readonly class="flex-1 min-w-0 h-11 bg-slate-900 ring-1 ring-inset ring-slate-700 text-slate-100 text-xs px-3 rounded-xl" placeholder="O link aparece aqui" aria-label="Link de convite">
+        <button type="button" id="shareSend" class="btn-quiet !h-11 shrink-0">Enviar</button>
+      </div>
+      <p id="shareMsg" class="text-xs text-slate-400 leading-snug min-h-4" role="status"></p>
+      <div>
+        <h3 class="text-sm font-bold text-slate-200">Participantes</h3>
+        <ul id="shareMembers" class="mt-1 divide-y divide-slate-800"></ul>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="bankDialog" aria-labelledby="bankTitle" class="bg-slate-950 text-slate-100 p-0">
     <div class="flex flex-col h-full">
@@ -1139,6 +1184,8 @@
   <script src="camera.js"></script>
   <script src="workspace.js"></script>
   <script src="learn.js"></script>
+  <script src="collab.js"></script>
+  <script src="multi.js"></script>
   <script src="bank.js"></script>
 </body>
 </html>

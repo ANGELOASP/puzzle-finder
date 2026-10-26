@@ -23,6 +23,39 @@ const Search = (() => {
     }
   }
 
+  // Fila do servidor: com várias pessoas buscando, cada análise espera a sua vez. Enquanto o pedido não responde,
+  // pergunta a posição e avisa na tela ("2 buscas na sua frente").
+  function queueBanner() {
+    let el = document.getElementById('queueBanner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'queueBanner';
+      el.setAttribute('role', 'status');
+      el.className = 'hidden fixed left-1/2 -translate-x-1/2 bottom-4 z-[60] max-w-[92vw] px-4 py-2.5 rounded-xl bg-slate-900 text-sm text-amber-200 ring-1 ring-inset ring-amber-400/40 shadow-lg';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  function watchQueue(rid) {
+    let alive = true;
+    const poll = async () => {
+      if (!alive) return;
+      try {
+        const r = await fetch(`${getApiUrl()}/api/queue/${rid}`);
+        const q = r.ok ? await r.json() : null;
+        const el = queueBanner();
+        if (alive && q && q.state === 'waiting') {
+          el.textContent = q.ahead === 1 ? 'Na fila do servidor: 1 busca na sua frente (outra pessoa está buscando).' : `Na fila do servidor: ${q.ahead} buscas na sua frente (outras pessoas estão buscando).`;
+          el.classList.remove('hidden');
+        } else el.classList.add('hidden');
+      } catch (_) { /* sem resposta: não atrapalha a busca */ }
+      if (alive) setTimeout(poll, 2000);
+    };
+    const t = setTimeout(poll, 2500);
+    return () => { alive = false; clearTimeout(t); const el = document.getElementById('queueBanner'); if (el) el.classList.add('hidden'); };
+  }
+
   // Monta as fotos de um pedido. Foto que o servidor já separou (tem `key`) vai só como referência, sem reenviar o
   // arquivo; as outras vão como arquivo. Aceita também Blobs soltos (quadro da câmera ao vivo).
   function appendPhotos(form, photos) {
@@ -59,9 +92,15 @@ const Search = (() => {
     for (let start = 0; start < todo.length; start += PHOTOS_PER_REQUEST) {
       const chunk = todo.slice(start, start + PHOTOS_PER_REQUEST);
       if (onBatch) onBatch({ from: done.size + start, to: done.size + start + chunk.length, total: photos.length });
-      const send = async () => fetchWithRetry(`${getApiUrl()}${path}`, {
-        method: 'POST', headers: await authHeaders(), body: await buildForm(chunk),
-      }, timeoutMs);
+      const send = async () => {
+        const rid = newId();
+        const stop = watchQueue(rid);
+        try {
+          return await fetchWithRetry(`${getApiUrl()}${path}`, {
+            method: 'POST', headers: { ...(await authHeaders()), 'X-Request-Id': rid }, body: await buildForm(chunk),
+          }, timeoutMs);
+        } finally { stop(); }
+      };
       let res = await send();
       if (res.status === 409) {
         // O servidor não guardava mais essas fotos (reiniciou, ou o cache encheu): reenvia o arquivo delas
