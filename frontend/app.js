@@ -1548,7 +1548,7 @@ const holeRetake = document.getElementById('holeRetake');
 const holeInput = document.getElementById('holeInput');
 // Vista da foto: recorte de largura `w` (em pixels da foto) centrado em (cx, cy), no formato 4:3 da tela.
 // O que aparece na tela é o que vai para a busca: amplie até o buraco ocupar cerca de 1/3 da imagem.
-const hole = { bmp: null, seed: null, view: { cx: 0, cy: 0, w: 1 }, busy: false };
+const hole = { ring: [], bmp: null, seed: null, view: { cx: 0, cy: 0, w: 1 }, busy: false };
 const HOLE_VIEW_W = 800, HOLE_VIEW_H = 600;
 
 function holeFullW() { return Math.max(hole.bmp.width, (hole.bmp.height * 4) / 3); }
@@ -1639,8 +1639,17 @@ async function scanHole(tries) {
     fd.append('hole_file', crop.blob, 'hole.jpg');
     fd.append('seed_x', String(crop.seed.x));
     fd.append('seed_y', String(crop.seed.y));
+    // Com a arte e a célula, o servidor usa as vizinhas REAIS do buraco para calibrar a cor da caixa (hole_ring)
+    Search.appendArt(fd);
+    fd.append('cols', currentPuzzle.cols);
+    fd.append('rows', currentPuzzle.rows);
+    fd.append('col', grid.cell.col);
+    fd.append('row', grid.cell.row);
+    if (grid.scanMap) fd.append('scan_map', grid.scanMap);
+    fd.append('aspect', String(Grid.cellAspect(currentPuzzle, grid.boxBitmap, currentPuzzle.box_corners)));
     const res = await fetchWithTimeout(`${getApiUrl()}/api/hole-shape`, { method: 'POST', headers: await authHeaders(), body: fd }, 60000);
     if (id !== holeScanId) return;
+    if (res.status === 409) { grid.artKey = null; return scanHole(tries); } // o servidor não tem mais a arte: reenvia o arquivo
     if (!res.ok) {
       // Foto aberta demais (tabuleiro inteiro): aproxima do ponto marcado e mede de novo
       if (tries > 0 && res.status === 422 && hole.view.w > 150) {
@@ -1654,6 +1663,8 @@ async function scanHole(tries) {
     }
     const d = await res.json();
     if (id !== holeScanId) return;
+    if (d.box_key) grid.artKey = d.box_key;
+    hole.ring = (d.ring && d.ring.pairs) || [];
     const [x0, y0, x1, y1] = d.box;
     const bw = x1 - x0;
     if (tries > 0 && bw < 0.2) {
@@ -1826,6 +1837,8 @@ holeGo.addEventListener('click', async () => {
     });
     const data = Search.mergeLocal(parts);
     setServiceStatus('api', 'ok', 'Online');
+    // As vizinhas reais viram referência de cor da caixa para as próximas buscas
+    if (hole.ring && hole.ring.length) { Workspace.addRing(hole.ring, cell); hole.ring = []; }
     hole.busy = false;
     holeDialog.close();
     Workspace.openFindResults(data, cell, { mode: 'hole' });
