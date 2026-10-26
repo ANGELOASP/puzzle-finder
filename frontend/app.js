@@ -2116,6 +2116,39 @@ btnOpenRealtimeScanner.addEventListener('click', async () => {
 
 btnCloseScanner.addEventListener('click', () => scannerModal.close());
 
+// O quadro ao vivo tem no máximo 1920 px e sai borrado com a câmera em movimento: as peças ficam pequenas demais para
+// comparar. Aqui o app tira uma FOTO de verdade (resolução total do sensor, com foco), anexa como as outras fotos das
+// peças e busca com a mesma análise das fotos, com comparação lado a lado para você confirmar.
+document.getElementById('btnScannerCapture').addEventListener('click', async () => {
+  if (!cameraStream) return;
+  if (tablePhotos.length >= MAX_TABLE_PHOTOS) { notify(`Já são ${MAX_TABLE_PHOTOS} fotos. Remova alguma para anexar outra.`, 'info'); return; }
+  const btn = document.getElementById('btnScannerCapture');
+  btn.disabled = true;
+  try {
+    let blob = null;
+    const track = cameraStream.getVideoTracks()[0];
+    try { if (window.ImageCapture && track) blob = await new ImageCapture(track).takePhoto(); } catch (_) { /* sem foto de sensor: usa o quadro do vídeo */ }
+    if (!blob) {
+      const c = document.createElement('canvas');
+      c.width = scannerVideo.videoWidth; c.height = scannerVideo.videoHeight;
+      c.getContext('2d').drawImage(scannerVideo, 0, 0);
+      blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+    }
+    if (!blob) throw new Error('Não foi possível tirar a foto.');
+    const shot = await compressImage(new File([blob], 'captura.jpg', { type: blob.type || 'image/jpeg' }), TABLE_MAX_SIDE, 0.9);
+    scannerModal.close();
+    tablePhotos.push(Search.newPhoto(shot, []));
+    renderTablePhotos();
+    checkReady();
+    if (!btnFind.disabled) btnFind.click();
+    else notify('Foto anexada. Escolha a peça no mapa e toque em "Encontrar peça nas fotos".', 'info', 6000);
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // Fechar pelo botão, pelo Esc ou pelo gesto de voltar sempre desliga a câmera
 scannerModal.addEventListener('close', stopScannerCamera);
 
@@ -2155,7 +2188,7 @@ async function startScannerCamera() {
     await scannerVideo.play();
 
     scannerStatusText.textContent = serviceStatus.api === 'ok'
-      ? 'Mova a câmera devagar sobre as peças espalhadas…'
+      ? 'Mova a câmera devagar sobre as peças espalhadas. Para acertar mais, toque em "Capturar foto".'
       : 'Acordando o servidor… a primeira análise pode demorar.';
     startRealtimeLoop();
 
