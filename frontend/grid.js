@@ -112,7 +112,8 @@ const Grid = (() => {
     const Hh = Math.round((rows + 2 * margin) * cellH);
     const sw = source.width, sh = source.height;
     const Hm = homography(UNIT, corners.map(([x, y]) => [x * sw, y * sh]));
-    const src = source.getContext('2d').getImageData(0, 0, sw, sh).data;
+    // A foto da caixa é endireitada várias vezes (arte, janelas de comparação): lê os pixels uma vez só
+    const src = source._pfPixels || (source._pfPixels = source.getContext('2d').getImageData(0, 0, sw, sh).data);
     const out = document.createElement('canvas');
     out.width = W; out.height = Hh;
     const octx = out.getContext('2d');

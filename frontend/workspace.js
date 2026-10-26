@@ -890,27 +890,82 @@ const Workspace = (() => {
     if (wrap.open) drawPhoto();
   }
 
-  // Arte da caixa em volta da célula (±0,75 célula), com a célula contornada
+  // Arte da caixa em volta da célula (±0,75 célula), com a célula contornada.
+  // Recortada direto da foto da caixa na resolução máxima dela (a arte de 48 px por célula é só para o motor de busca) e
+  // ampliada em etapas de 2× com um leve realce de nitidez: muito mais detalhe para comparar com a peça.
+  const ART_PAD = 0.75;
+  const ART_PX = 720;
+  const artCache = new Map();
+
+  function artWindow(cell) {
+    const p = currentPuzzle;
+    const key = `${p.id}:${cell.col},${cell.row}:${grid.boxBitmap ? grid.boxBitmap.width : 0}`;
+    if (artCache.has(key)) return artCache.get(key);
+    let win = null;
+    const corners = p.box_corners;
+    if (grid.boxBitmap && Array.isArray(corners) && corners.length === 4) {
+      const native = Grid.nativeCell(grid.boxBitmap, corners, p.cols, p.rows);
+      const cellW = Math.max(24, Math.min(220, Math.round(native.w)));
+      const cellH = Math.max(14, Math.round(cellW * Grid.cellAspect(p, grid.boxBitmap, corners)));
+      const n = 1 + 2 * ART_PAD;
+      win = Grid.rectify(grid.boxBitmap, Grid.windowCorners(corners, p.cols, p.rows, cell.col, cell.row, ART_PAD), { cols: n, rows: n, cellW, cellH });
+    }
+    artCache.set(key, win);
+    if (artCache.size > 16) artCache.delete(artCache.keys().next().value);
+    return win;
+  }
+
+  function sharpen(ctx, size, amount = 0.55) {
+    const img = ctx.getImageData(0, 0, size, size);
+    const s = img.data, o = new Uint8ClampedArray(s);
+    for (let y = 1; y < size - 1; y++) for (let x = 1; x < size - 1; x++) {
+      const i = (y * size + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        const blur = (s[i + c - 4] + s[i + c + 4] + s[i + c - size * 4] + s[i + c + size * 4]) / 4;
+        o[i + c] = s[i + c] + (s[i + c] - blur) * amount;
+      }
+    }
+    ctx.putImageData(new ImageData(o, size, size), 0, 0);
+  }
+
   function drawArt(cell) {
     const p = currentPuzzle;
-    const art = grid.art;
-    const cw = art.width / p.cols, ch = art.height / p.rows;
-    const pad = 0.75;
-    const sx = (cell.col - pad) * cw, sy = (cell.row - pad) * ch, sw = (1 + 2 * pad) * cw, sh = (1 + 2 * pad) * ch;
     const canvas = $('cmpArt');
-    const ctx = canvas.getContext('2d');
-    const size = canvas.width;
+    if (canvas.width !== ART_PX) { canvas.width = ART_PX; canvas.height = ART_PX; }
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const size = ART_PX;
+    let src = artWindow(cell), pad = ART_PAD;
+    let sx = 0, sy = 0, sw, sh;
+    if (src) { sw = src.width; sh = src.height; }
+    else { // sem a foto da caixa na memória: usa a arte do motor
+      src = grid.art;
+      const cw0 = src.width / p.cols, ch0 = src.height / p.rows;
+      sx = (cell.col - pad) * cw0; sy = (cell.row - pad) * ch0; sw = (1 + 2 * pad) * cw0; sh = (1 + 2 * pad) * ch0;
+    }
+    const cw = sw / (1 + 2 * pad), ch = sh / (1 + 2 * pad);
     const k = size / Math.max(sw, sh);
     const ox = (size - sw * k) / 2, oy = (size - sh * k) / 2;
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, size, size);
+    ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(art, sx, sy, sw, sh, ox, oy, sw * k, sh * k);
+    // Ampliação em etapas de 2× (um salto só deixa a imagem serrilhada ou borrada)
+    let cur = src, cx0 = sx, cy0 = sy, cw1 = sw, ch1 = sh;
+    while (cw1 * 2 < sw * k) {
+      const step = document.createElement('canvas');
+      step.width = Math.round(cw1 * 2); step.height = Math.round(ch1 * 2);
+      const sctx = step.getContext('2d');
+      sctx.imageSmoothingQuality = 'high';
+      sctx.drawImage(cur, cx0, cy0, cw1, ch1, 0, 0, step.width, step.height);
+      cur = step; cx0 = 0; cy0 = 0; cw1 = step.width; ch1 = step.height;
+    }
+    ctx.drawImage(cur, cx0, cy0, cw1, ch1, ox, oy, sw * k, sh * k);
+    sharpen(ctx, size);
     const rx = ox + pad * cw * k, ry = oy + pad * ch * k;
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 6;
     ctx.strokeStyle = 'rgba(2, 6, 23, 0.85)';
     ctx.strokeRect(rx, ry, cw * k, ch * k);
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 3;
     ctx.strokeStyle = '#ffffff';
     ctx.strokeRect(rx, ry, cw * k, ch * k);
   }
