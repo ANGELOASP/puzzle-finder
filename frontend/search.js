@@ -179,25 +179,65 @@ const Search = (() => {
     };
   }
 
+  // ---------- Contagem das peças achadas em cada foto ----------
+  // Só separa e conta (rota leve, que também deixa as fotos no cache do servidor para as buscas seguintes).
+  // Preenche em cada foto: pieceCount, boxes (onde está cada peça, no quadro da foto), frame e key.
+  async function count(photos, { pieceMm, onBatch, onPart } = {}) {
+    const parts = [];
+    const buildForm = (chunk) => {
+      const form = new FormData();
+      appendPhotos(form, chunk);
+      if (pieceMm) form.append('piece_mm', String(pieceMm));
+      return form;
+    };
+    await run('/api/count-pieces', photos, buildForm, {
+      parts, timeoutMs: 180000, errorText: 'Não foi possível contar as peças.', onBatch,
+      onPart: (ps) => {
+        const last = ps[ps.length - 1];
+        if (last && last.data) {
+          last.photos.forEach((photo, i) => {
+            const info = (last.data.photos || [])[i];
+            if (!info) return;
+            photo.pieceCount = info.count;
+            photo.boxes = info.found || [];
+            photo.frame = info.frame_size;
+            photo.whiteRef = info.white_ref;
+            photo.counted = true;
+          });
+        }
+        if (onPart) onPart(ps);
+      },
+    });
+    return parts;
+  }
+
   // ---------- Fotos: identidade e conclusão ----------
   const newId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
 
   function newPhoto(blob, issues = []) {
-    return { id: newId(), blob, url: URL.createObjectURL(blob), issues, confirmed: [], pieceCount: 0, done: false, key: null };
+    return {
+      id: newId(), blob, url: URL.createObjectURL(blob), issues, confirmed: [], done: false, key: null,
+      pieceCount: 0, boxes: [], frame: null, counted: false, // contagem do servidor
+      userCount: null, countOk: false,                       // o que o usuário confirmou
+    };
   }
 
   // Foto concluída: todas as peças dela já foram encaixadas. Ela sai das próximas buscas (dá para voltar a incluir).
   // `placedIn`: quantas peças da foto o localizador já deu como encaixadas, `locatedIn`: quantas ele localizou.
+  // Quantas peças a foto tem: o número que o usuário confirmou, senão a contagem do servidor
+  const expected = (photo) => (photo.userCount != null ? photo.userCount : photo.pieceCount);
+
   function updateDone(photo, { placedIn = 0, locatedIn = 0 } = {}) {
-    if (photo.done || !photo.pieceCount) return false;
+    const total = expected(photo);
+    if (photo.done || !total) return false;
     const placed = Math.max(photo.confirmed.length, placedIn);
-    const byCount = placed >= photo.pieceCount;
+    const byCount = placed >= total;
     // Peças sem silhueta não entram no localizador: sobram até 2 sem que a foto deixe de estar concluída
-    const byLocate = locatedIn > 0 && placedIn >= locatedIn && photo.pieceCount - locatedIn <= 2;
+    const byLocate = locatedIn > 0 && placedIn >= locatedIn && total - locatedIn <= 2;
     if (!(byCount || byLocate)) return false;
     photo.done = true;
     return true;
   }
 
-  return { run, appendPhotos, appendArt, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
+  return { run, count, expected, appendPhotos, appendArt, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
 })();

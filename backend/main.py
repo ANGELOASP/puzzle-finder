@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPExcept
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import grid_engine
+import local_search
 import piece_cache
 from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
@@ -198,7 +199,7 @@ async def read_art(box_file, box_key):
     raise HTTPException(status_code=400, detail="Envie a arte.")
 
 
-def segment_tables(tables, piece_mm=None, need_image=False):
+def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
     """
     Cada foto: acha a folha A4 (endireita, balanço de branco, escala) e separa as peças.
     Cada peça ganha "photo" (índice da foto) e, com folha e tamanho da peça conhecidos, "body_px".
@@ -245,7 +246,7 @@ def segment_tables(tables, piece_mm=None, need_image=False):
             p["photo"] = i
         photos.append(photo)
         pieces += found
-    if not pieces:
+    if not pieces and not allow_empty:
         raise HTTPException(status_code=404, detail="Nenhuma peça encontrada nas fotos. Espalhe as peças sobre uma folha A4 branca, sem encostar umas nas outras.")
     return photos, pieces
 
@@ -500,6 +501,109 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
         "photos": photos_summary(photos),
         "missing_cells": scan_map.count("0") if scan_map and len(scan_map) == cols * rows else cols * rows,
     }
+
+
+@app.post("/api/count-pieces")
+async def count_pieces(
+    table_file: Optional[UploadFile] = File(None),
+    table_files: Optional[List[UploadFile]] = File(None),
+    photo_refs: Optional[str] = Form(None),
+    piece_mm: Optional[float] = Form(None),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """
+    Conta as peças achadas em cada foto e devolve onde está cada uma (caixa e centro na foto ORIGINAL), para o app
+    desenhar a contagem sobre a foto e o usuário conferir com as peças que ele pôs na folha.
+    """
+    tables = await read_tables(table_file, table_files, photo_refs)
+    if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
+        piece_mm = None
+    return await run_in_threadpool(heavy(process_count), tables, piece_mm)
+
+
+def process_count(tables, piece_mm):
+    photos, pieces = segment_tables(tables, piece_mm, allow_empty=True)
+    boxes = [[] for _ in photos]
+    for p in pieces:
+        bbox, centroid = piece_location(photos, p)
+        boxes[p["photo"]].append({"bbox": bbox, "centroid": centroid, "area": round(float(p.get("area") or 0))})
+    summary = photos_summary(photos)
+    for info, found in zip(summary, boxes):
+        info["count"] = len(found)
+        info["found"] = found
+    return {"photos": summary, "total": len(pieces)}
+
+
+@app.post("/api/local-search")
+async def local_search_endpoint(
+    hole_file: UploadFile = File(...),
+    table_file: Optional[UploadFile] = File(None),
+    table_files: Optional[List[UploadFile]] = File(None),
+    photo_refs: Optional[str] = Form(None),
+    piece_mm: Optional[float] = Form(None),
+    seed_x: Optional[float] = Form(None),
+    seed_y: Optional[float] = Form(None),
+    top_k: int = Form(5),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """
+    Busca local: a foto de perto de UM buraco (com as peças vizinhas em volta) contra as peças soltas das fotos. Mede o
+    formato exato do buraco e compara as cores da borda das vizinhas com as da borda de cada peça (ver local_search).
+    `seed_x`/`seed_y` (0..1): ponto dentro do buraco; sem eles, o centro da foto.
+    """
+    tables = await read_tables(table_file, table_files, photo_refs)
+    hole_bytes = await read_upload(hole_file)
+    if hole_bytes is None:
+        raise HTTPException(status_code=400, detail="Envie a foto do buraco.")
+    if piece_mm is not None and not (3.0 <= piece_mm <= 100.0):
+        piece_mm = None
+    seed = (seed_x, seed_y) if seed_x is not None and seed_y is not None else None
+    return await run_in_threadpool(heavy(process_local_search), tables, hole_bytes, seed, piece_mm,
+                                   max(1, min(10, top_k)))
+
+
+def process_local_search(tables, hole_bytes, seed, piece_mm, top_k):
+    hole_img = img_bytes_to_cv2(hole_bytes, 1600)
+    try:
+        hole = local_search.segment_hole(hole_img, seed)
+    except local_search.HoleError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+    photos, pieces = segment_tables(tables, piece_mm)
+    ranked = local_search.search(hole, pieces, top_k=top_k)
+    if not ranked:
+        raise HTTPException(status_code=404, detail="Nenhuma peça das fotos coube nesse buraco. Confira se o buraco está bem enquadrado.")
+    candidates = []
+    for i, c in enumerate(ranked):
+        piece = pieces[c["index"]]
+        bbox, centroid = piece_location(photos, piece)
+        candidates.append({
+            "rank": i + 1,
+            "photo": piece["photo"],
+            "bbox": bbox,
+            "centroid": centroid,
+            "rotation_deg": c["rotation"],
+            "score": round(c["score"] * 100, 1),
+            "shape_ok": c["shape_ok"],
+            "overlap": round(c["iou"] * 100, 1),
+            "edge": round(c["edge"], 2),
+            "thumb_base64": piece_thumb(piece),
+            "sig": grid_engine.piece_signature(piece),
+            # A peça desenhada dentro da foto do buraco, no giro certo: dá para conferir com os olhos
+            "fit_base64": cv2_to_base64_jpeg(local_search.render_fit(hole, piece, c["rotation"], c["offset"]), quality=82),
+        })
+    return {
+        "candidates": candidates,
+        "confident": ranked[0]["score"] >= local_search_confident(),
+        "hole": {"shapes": hole["shapes"]},
+        "hole_preview_base64": cv2_to_base64_jpeg(local_search.draw_hole(hole), quality=80),
+        "pieces_detected": len(pieces),
+        "photos": photos_summary(photos),
+    }
+
+
+def local_search_confident():
+    """Nota (0..1) da 1ª colocada a partir da qual ela vem como "muito provável" (medido no gabarito sintético)."""
+    return 0.9
 
 
 @app.post("/api/find-cell")
