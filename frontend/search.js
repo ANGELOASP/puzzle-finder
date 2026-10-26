@@ -164,6 +164,34 @@ const Search = (() => {
     };
   }
 
+  // Foto do buraco: junta os lotes pelo custo da comparação (a nota de cada lote é relativa ao próprio lote)
+  function mergeLocal(parts) {
+    const ok = okParts(parts);
+    if (!ok.length) return null;
+    const all = [];
+    for (const part of ok) {
+      for (const c of part.data.candidates) all.push({ ...c, photo: localToGlobal(part, c.photo) });
+    }
+    all.sort((a, b) => a.cost - b.cost);
+    const top = all.slice(0, 5);
+    const c1 = top[0].cost;
+    const c2 = top.length > 1 ? top[1].cost : c1 * 2;
+    // Mesma nota do servidor: 1 = muito melhor que a 2ª opção; as demais, quão perto ficaram da 1ª
+    const clip = (v) => Math.max(0, Math.min(1, v));
+    top.forEach((c, i) => {
+      const score = i === 0 ? clip(((c2 - c1) / Math.max(c2, 1e-6)) * 4 + 0.5) : clip(0.5 - (c.cost - c1) / Math.max(c1, 1e-6));
+      c.score = Math.round(score * 1000) / 10;
+      c.rank = i + 1;
+    });
+    return {
+      ...ok[0].data,
+      candidates: top,
+      confident: top[0].score >= 90,
+      pieces_detected: detected(parts),
+      photos: photosSummary(parts),
+    };
+  }
+
   // Peças → mapa: todas as peças de todos os lotes. O id carrega o id da foto (estável ao salvar a sessão)
   function mergeLocate(parts) {
     const ok = okParts(parts);
@@ -239,5 +267,5 @@ const Search = (() => {
     return true;
   }
 
-  return { run, count, expected, appendPhotos, appendArt, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
+  return { run, count, expected, appendPhotos, appendArt, mergeLocal, mergeFindCell, mergeFindPiece, mergeLocate, newPhoto, updateDone, idxOf };
 })();

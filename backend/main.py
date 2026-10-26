@@ -586,6 +586,8 @@ def process_local_search(tables, hole_bytes, seed, piece_mm, top_k):
             "shape_ok": c["shape_ok"],
             "overlap": round(c["iou"] * 100, 1),
             "edge": round(c["edge"], 2),
+            # Custo da comparação: com mais de um lote de fotos, o app junta os lotes por ele
+            "cost": round(c["cost"], 4),
             "thumb_base64": piece_thumb(piece),
             "sig": grid_engine.piece_signature(piece),
             # A peça desenhada dentro da foto do buraco, no giro certo: dá para conferir com os olhos

@@ -180,6 +180,9 @@
     .cam-chip:hover { color: #fff; box-shadow: inset 0 0 0 1px rgb(100 116 139); }
     .photo-warn { position: absolute; left: .25rem; bottom: .25rem; right: .25rem; padding: .1rem .35rem; border-radius: .375rem; font-size: 10px; font-weight: 700;
       color: rgb(254 243 199); background: rgb(120 53 15 / .85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #holeDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    @media (min-width: 768px) { #holeDialog { width: 46rem; height: auto; max-height: 94vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
+    #cmpFit { width: 100%; height: 100%; object-fit: contain; display: block; }
     #countDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
     @media (min-width: 768px) { #countDialog { width: 46rem; height: auto; max-height: 94vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
     #compareDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
@@ -644,6 +647,13 @@
             <span id="btnFindText">Encontrar peça nas fotos</span>
           </button>
 
+          <!-- Foto de perto do buraco: busca local -->
+          <button id="btnHolePhoto" type="button" class="btn-quiet w-full">
+            <svg class="icon w-[18px] h-[18px]"><use href="#i-target"/></svg>
+            Foto do buraco · busca local
+          </button>
+          <input type="file" id="holeInput" accept="image/*" class="sr-only" tabindex="-1" aria-hidden="true">
+
           <!-- Scanner em tempo real -->
           <button id="btnOpenRealtimeScanner" class="btn-quiet w-full">
             <svg class="icon w-[18px] h-[18px]"><use href="#i-scan"/></svg>
@@ -893,6 +903,45 @@
     </div>
   </dialog>
 
+  <dialog id="holeDialog" aria-labelledby="holeTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col h-full">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Busca local</p>
+          <h2 id="holeTitle" class="text-xl md:text-2xl font-extrabold tracking-tight leading-tight">Foto do buraco</h2>
+          <p id="holeSub" class="text-sm text-slate-400 mt-0.5"></p>
+        </div>
+        <button type="button" id="holeClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </header>
+      <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
+        <div id="holeFrame" class="rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-900 overflow-hidden">
+          <canvas id="holeCanvas" class="block w-full touch-none cursor-crosshair" aria-label="Foto do buraco: toque no meio da parte vazia"></canvas>
+        </div>
+        <p class="text-xs text-slate-400 leading-snug">Toque no meio da parte <strong class="text-slate-200">vazia</strong> do buraco para marcar o ponto (o círculo verde).</p>
+        <div id="holeError" class="hidden p-3 rounded-xl bg-amber-400/10 ring-1 ring-inset ring-amber-400/30 text-sm text-amber-200 leading-snug"></div>
+        <div id="holeProgress" class="hidden p-3 rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+          <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
+          <span id="holeProgressText" class="text-sm text-slate-200"></span>
+        </div>
+        <details class="rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800">
+          <summary class="cursor-pointer h-11 px-3 flex items-center text-sm font-semibold text-slate-300">Como fotografar o buraco</summary>
+          <ul class="px-4 pb-3 pt-1 list-disc pl-8 space-y-1.5 text-sm text-slate-300">
+            <li>De cima, com o <strong class="text-slate-100">topo do celular para o topo do quebra-cabeça</strong>, como na foto da caixa.</li>
+            <li>O buraco no meio, com as <strong class="text-slate-100">peças vizinhas em volta</strong> (as 4, se possível).</li>
+            <li>De perto: o buraco deve ocupar cerca de um terço da foto. Sem a sombra do celular e sem reflexo.</li>
+            <li>Lente 1×, sem zoom digital e sem flash.</li>
+          </ul>
+        </details>
+      </div>
+      <footer class="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-slate-800 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2">
+        <button type="button" id="holeRetake" class="btn-quiet h-12">Outra foto</button>
+        <button type="button" id="holeGo" class="btn-primary h-12">Buscar nas fotos</button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog id="countDialog" aria-labelledby="countTitle" class="bg-slate-950 text-slate-100 p-0">
     <div class="flex flex-col h-full">
       <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
@@ -949,8 +998,8 @@
       <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
         <div class="grid grid-cols-2 gap-3">
           <figure class="flex flex-col gap-1.5">
-            <div class="cmp-frame"><canvas id="cmpArt" width="360" height="360" aria-label="Arte da caixa em volta da célula"></canvas></div>
-            <figcaption class="text-xs text-slate-400 text-center"><span class="font-semibold text-slate-200">Na caixa</span> · <span id="cmpArtCap"></span></figcaption>
+            <div class="cmp-frame"><canvas id="cmpArt" width="360" height="360" aria-label="Arte da caixa em volta da célula"></canvas><img id="cmpFit" class="hidden" alt="Foto do buraco com a peça encaixada"></div>
+            <figcaption class="text-xs text-slate-400 text-center"><span id="cmpArtLabel" class="font-semibold text-slate-200">Na caixa</span> · <span id="cmpArtCap"></span></figcaption>
           </figure>
           <figure class="flex flex-col gap-1.5">
             <div class="cmp-frame"><img id="cmpPiece" alt="Peça encontrada na foto, já girada como deve encaixar"></div>
