@@ -1185,6 +1185,7 @@ for (const input of [tableInput, tableInputGallery]) {
 }
 
 btnClearTablePhotos.addEventListener('click', () => {
+  tablePhotos.forEach(p => Collab.removed(p.id)); // remoção pedida pelo usuário: vale para os outros aparelhos
   tablePhotos.splice(0).forEach(p => URL.revokeObjectURL(p.url));
   renderTablePhotos();
 });
@@ -1209,6 +1210,7 @@ function renderTablePhotos() {
     del.innerHTML = '<svg class="icon w-4 h-4"><use href="#i-x"/></svg>';
     del.addEventListener('click', () => {
       URL.revokeObjectURL(photo.url);
+      Collab.removed(photo.id);
       tablePhotos.splice(i, 1);
       renderTablePhotos();
     });

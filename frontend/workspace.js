@@ -1179,6 +1179,7 @@ const Workspace = (() => {
       const n = tablePhotos.length;
       notify(`Sessão anterior recuperada: ${n} ${n === 1 ? 'foto' : 'fotos'}${state.located ? ' e o resultado do "onde vai cada peça"' : ''}.`, 'info', 5000);
     }
+    Collab.ready(); // com a sessão deste aparelho de volta, a sincronização pode começar
     state.persistOff = false;
   }
 
