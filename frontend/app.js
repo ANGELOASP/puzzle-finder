@@ -1700,6 +1700,8 @@ const mapContainer = document.getElementById('mapContainer');
 const mapImage = document.getElementById('mapImage');
 const mapPin = document.getElementById('mapPin');
 const cellNumber = document.getElementById('cellNumber');
+const cellColInput = document.getElementById('cellCol');
+const cellRowInput = document.getElementById('cellRow');
 const cellInfo = document.getElementById('cellInfo');
 const btnToggleCell = document.getElementById('btnToggleCell');
 const scanInput = document.getElementById('scanInput');
@@ -1769,6 +1771,8 @@ async function enterGridMode(puzzle, boxImageBlob) {
   step1Text.textContent = 'Escolha a peça que falta';
   step1Sub.textContent = 'no mapa ou pelo número';
   cellNumber.max = String(puzzle.cols * puzzle.rows);
+  cellColInput.max = String(puzzle.cols);
+  cellRowInput.max = String(puzzle.rows);
   grid.scanMap = (puzzle.scan_map && puzzle.scan_map.length === puzzle.cols * puzzle.rows) ? puzzle.scan_map : null;
   grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 3000);
   if (currentPuzzle !== puzzle) return;
@@ -1833,6 +1837,8 @@ function selectCell(col, row) {
   grid.cell = { col, row };
   const n = Grid.cellNumber(col, row, p.cols);
   if (String(cellNumber.value) !== String(n)) cellNumber.value = String(n);
+  cellColInput.value = String(col + 1);
+  cellRowInput.value = String(row + 1);
   const state = cellState(grid.cell);
   const stateText = state === '1' ? ' · já montada' : state === '0' ? ' · faltando' : '';
   cellInfo.textContent = `Coluna ${col + 1} · Linha ${row + 1}${stateText}`;
@@ -1854,6 +1860,24 @@ cellNumber.addEventListener('change', () => {
   const { col, row } = Grid.cellFromNumber(n, p.cols);
   selectCell(col, row);
 });
+
+// Coluna e linha: com as duas preenchidas e dentro da grade, seleciona a peça
+function onColRowInput() {
+  const p = currentPuzzle;
+  if (!p || !isGridPuzzle(p)) return;
+  const c = parseInt(cellColInput.value, 10), r = parseInt(cellRowInput.value, 10);
+  if (!cellColInput.value || !cellRowInput.value) return;
+  if (!(c >= 1 && c <= p.cols) || !(r >= 1 && r <= p.rows)) {
+    notify(`Coluna de 1 a ${p.cols} e linha de 1 a ${p.rows}.`, 'info');
+    return;
+  }
+  selectCell(c - 1, r - 1);
+}
+cellColInput.addEventListener('change', onColRowInput);
+cellRowInput.addEventListener('change', onColRowInput);
+for (const el of [cellColInput, cellRowInput]) {
+  el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); onColRowInput(); el.blur(); } });
+}
 
 async function persistScanMap() {
   const { error } = await supabaseClient.from('puzzles')

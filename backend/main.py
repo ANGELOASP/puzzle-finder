@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import grid_engine
 import local_search
 import piece_cache
+import piece_look
 from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
 
@@ -486,6 +487,8 @@ def process_locate_pieces(tables, box_bytes, cols, rows, scan_map, piece_mm, top
             # Assinatura de cor: o app guarda a das peças confirmadas e manda de volta em `calib`
             "sig": grid_engine.piece_signature(p),
             "sides": shapes,
+            # Aparência para o banco de peças: cores com nome, claro/escuro, liso/desenho e tamanho do corpo na miniatura
+            "look": piece_look.describe(p),
             "candidates": [{
                 "col": c["col"], "row": c["row"], "rotation_deg": c["rotation"],
                 "score": round(c["score"] * 100, 1),

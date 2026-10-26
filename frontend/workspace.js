@@ -307,6 +307,7 @@ const Workspace = (() => {
     const groupsEl = $('locateGroups');
     groupsEl.innerHTML = '';
     const data = state.located;
+    $('btnBank').classList.toggle('hidden', !(data && data.pieces.length));
     if (!data) { hide(summary, 'flex'); $('btnReviewSure').classList.add('hidden'); $('locateHint').classList.add('hidden'); return; }
 
     // Grupos: bordas (lados retos) primeiro, depois as regiões do mapa, e as sem lugar claro por último
@@ -671,6 +672,7 @@ const Workspace = (() => {
     const v = $('countInput').value.trim();
     photo.userCount = v === '' ? photo.pieceCount : Math.max(0, parseInt(v, 10) || 0);
     photo.countOk = true;
+    Learn.log('count', 'hit', { auto: photo.pieceCount, user: photo.userCount });
     renderTablePhotos();
     renderCountRow();
     persist();
@@ -980,9 +982,18 @@ const Workspace = (() => {
   $('cmpPrev').addEventListener('click', () => { state.cmp.index--; renderCompare(); });
   $('cmpNext').addEventListener('click', () => { state.cmp.index++; renderCompare(); });
 
+  // Aprendizado contínuo: o que o app sugeriu (posição e confiança) e o que o usuário decidiu
+  function logDecision(c, item, outcome) {
+    const mode = c.kind === 'locate' ? 'locate' : c.mode === 'hole' ? 'hole' : 'find';
+    const conf = c.kind === 'find' ? (c.index === 0 && c.confident ? 'sure' : item.score >= 70 ? 'maybe' : 'low') : confOf(c.piece, item);
+    const cell = cmpCell();
+    Learn.log(mode, outcome, { rank: c.index + 1, conf, score: item.score, cell: cell.row * currentPuzzle.cols + cell.col, rotation: item.rotation_deg, shapeOk: item.shape_ok, n: c.items.length });
+  }
+
   $('cmpNo').addEventListener('click', async () => {
     const c = state.cmp;
     const item = c.items[c.index];
+    logDecision(c, item, 'miss');
     if (c.kind === 'locate') {
       state.rejected.add(`${c.piece.id}:${item.col},${item.row}`);
       refreshAssign();
@@ -1024,6 +1035,7 @@ const Workspace = (() => {
     btn.disabled = true;
     try {
       await registerFound({ cell, rotation: item.rotation_deg });
+      logDecision(c, item, 'hit');
       const sig = c.kind === 'find' ? item.sig : c.piece.sig;
       // A rotação da busca local é relativa à foto do buraco, não à arte: não serve para calibrar a cor
       if (!(c.kind === 'find' && c.mode === 'hole')) calibAdd(sig, cell, item.rotation_deg);
@@ -1222,5 +1234,10 @@ const Workspace = (() => {
   });
 
   setMode('find');
-  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
+  // Para o banco de peças
+  function bankApi() {
+    return { pieces: state.located ? state.located.pieces : [], placed: state.placedPieces, placeOf, openLocate };
+  }
+
+  return { bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();
