@@ -307,6 +307,7 @@ const Workspace = (() => {
     const groupsEl = $('locateGroups');
     groupsEl.innerHTML = '';
     const data = state.located;
+    $('btnBank').classList.toggle('hidden', !(data && data.pieces.length));
     if (!data) { hide(summary, 'flex'); $('btnReviewSure').classList.add('hidden'); $('locateHint').classList.add('hidden'); return; }
 
     // Grupos: bordas (lados retos) primeiro, depois as regiões do mapa, e as sem lugar claro por último
@@ -671,6 +672,7 @@ const Workspace = (() => {
     const v = $('countInput').value.trim();
     photo.userCount = v === '' ? photo.pieceCount : Math.max(0, parseInt(v, 10) || 0);
     photo.countOk = true;
+    Learn.log('count', 'hit', { auto: photo.pieceCount, user: photo.userCount });
     renderTablePhotos();
     renderCountRow();
     persist();
@@ -749,7 +751,7 @@ const Workspace = (() => {
       return;
     }
     state.cmp = {
-      kind: 'find', cell, items: data.candidates, index: 0, confident: data.confident, hole: data.hole, photos: data.photos,
+      kind: 'find', mode: extra.mode || 'art', cell, items: data.candidates, index: 0, confident: data.confident, hole: data.hole, photos: data.photos,
       remaining: extra.remaining || 0, more: extra.more || null, rejectedSigs: new Set(), loadingMore: false,
     };
     state.photoZoom = false;
@@ -819,7 +821,7 @@ const Workspace = (() => {
     const zone = zoneName(zoneOf(cell.col, cell.row)).toLowerCase();
 
     if (c.kind === 'find') {
-      $('cmpKicker').textContent = 'Achar uma peça';
+      $('cmpKicker').textContent = c.mode === 'hole' ? 'Foto do buraco' : 'Achar uma peça';
       $('cmpTitle').textContent = `Peça nº ${n}`;
       $('cmpSub').textContent = `Coluna ${cell.col + 1} · Linha ${cell.row + 1} · ${c.items.length} candidatas nas fotos`;
       $('cmpYesText').textContent = 'É essa! Encaixei';
@@ -831,8 +833,13 @@ const Workspace = (() => {
       $('cmpYesText').textContent = 'É aqui! Encaixei';
       $('cmpPieceCap').textContent = `foto ${c.piece.photo + 1}`;
     }
+    // Busca local: no lugar da arte da caixa, a própria foto do buraco com a peça candidata encaixada nele
+    const fit = c.kind === 'find' && c.mode === 'hole' && item.fit_base64;
+    $('cmpArt').classList.toggle('hidden', Boolean(fit));
+    $('cmpFit').classList.toggle('hidden', !fit);
+    $('cmpArtLabel').textContent = fit ? 'No buraco' : 'Na caixa';
     $('cmpArtCap').textContent = `nº ${n}`;
-    drawArt(cell);
+    if (fit) $('cmpFit').src = `data:image/jpeg;base64,${item.fit_base64}`; else drawArt(cell);
 
     const piece = $('cmpPiece');
     piece.src = `data:image/jpeg;base64,${c.kind === 'find' ? item.thumb_base64 : c.piece.thumb_base64}`;
@@ -844,7 +851,7 @@ const Workspace = (() => {
     badge.textContent = conf === 'sure' ? 'Muito provável' : conf === 'maybe' ? 'Possível' : 'Pouco provável';
 
     const notes = [];
-    if (c.kind === 'find' && c.index === 0) {
+    if (c.kind === 'find' && c.index === 0 && c.mode !== 'hole') {
       const h = holeLabel(c.hole);
       if (h) notes.push(h);
     }
@@ -975,9 +982,18 @@ const Workspace = (() => {
   $('cmpPrev').addEventListener('click', () => { state.cmp.index--; renderCompare(); });
   $('cmpNext').addEventListener('click', () => { state.cmp.index++; renderCompare(); });
 
+  // Aprendizado contínuo: o que o app sugeriu (posição e confiança) e o que o usuário decidiu
+  function logDecision(c, item, outcome) {
+    const mode = c.kind === 'locate' ? 'locate' : c.mode === 'hole' ? 'hole' : 'find';
+    const conf = c.kind === 'find' ? (c.index === 0 && c.confident ? 'sure' : item.score >= 70 ? 'maybe' : 'low') : confOf(c.piece, item);
+    const cell = cmpCell();
+    Learn.log(mode, outcome, { rank: c.index + 1, conf, score: item.score, cell: cell.row * currentPuzzle.cols + cell.col, rotation: item.rotation_deg, shapeOk: item.shape_ok, n: c.items.length });
+  }
+
   $('cmpNo').addEventListener('click', async () => {
     const c = state.cmp;
     const item = c.items[c.index];
+    logDecision(c, item, 'miss');
     if (c.kind === 'locate') {
       state.rejected.add(`${c.piece.id}:${item.col},${item.row}`);
       refreshAssign();
@@ -1019,8 +1035,10 @@ const Workspace = (() => {
     btn.disabled = true;
     try {
       await registerFound({ cell, rotation: item.rotation_deg });
+      logDecision(c, item, 'hit');
       const sig = c.kind === 'find' ? item.sig : c.piece.sig;
-      calibAdd(sig, cell, item.rotation_deg);
+      // A rotação da busca local é relativa à foto do buraco, não à arte: não serve para calibrar a cor
+      if (!(c.kind === 'find' && c.mode === 'hole')) calibAdd(sig, cell, item.rotation_deg);
       // Marca a peça como encaixada no localizador (venha a confirmação de onde vier) e confere se a foto acabou
       let piece = c.kind === 'locate' ? c.piece : null;
       if (!piece && sig && state.located) piece = state.located.pieces.find((pc) => pc.sig === sig) || null;
@@ -1216,5 +1234,10 @@ const Workspace = (() => {
   });
 
   setMode('find');
-  return { onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
+  // Para o banco de peças
+  function bankApi() {
+    return { pieces: state.located ? state.located.pieces : [], placed: state.placedPieces, placeOf, openLocate };
+  }
+
+  return { bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();

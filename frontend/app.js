@@ -1509,6 +1509,142 @@ btnFind.addEventListener('click', async () => {
   }
 });
 
+// ==========================================
+// FOTO DO BURACO · BUSCA LOCAL
+// Foto de perto de UM buraco: o servidor mede o formato exato dele e compara as bordas das vizinhas com as das peças.
+// ==========================================
+const holeDialog = document.getElementById('holeDialog');
+const holeCanvas = document.getElementById('holeCanvas');
+const holeError = document.getElementById('holeError');
+const holeProgress = document.getElementById('holeProgress');
+const holeProgressText = document.getElementById('holeProgressText');
+const holeGo = document.getElementById('holeGo');
+const holeRetake = document.getElementById('holeRetake');
+const holeInput = document.getElementById('holeInput');
+const hole = { blob: null, bmp: null, seed: { x: 0.5, y: 0.5 }, busy: false };
+
+function drawHoleCanvas() {
+  if (!hole.bmp) return;
+  const bmp = hole.bmp;
+  holeCanvas.width = bmp.width;
+  holeCanvas.height = bmp.height;
+  const ctx = holeCanvas.getContext('2d');
+  ctx.drawImage(bmp, 0, 0);
+  const x = hole.seed.x * bmp.width, y = hole.seed.y * bmp.height;
+  const r = Math.max(14, Math.min(bmp.width, bmp.height) * 0.04);
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.lineWidth = r * 0.45;
+  ctx.strokeStyle = 'rgba(2, 6, 23, 0.8)';
+  ctx.stroke();
+  ctx.lineWidth = r * 0.25;
+  ctx.strokeStyle = '#34d399';
+  ctx.stroke();
+}
+
+function setHoleBusy(text) {
+  hole.busy = Boolean(text);
+  holeGo.disabled = hole.busy;
+  holeRetake.disabled = hole.busy;
+  holeProgress.classList.toggle('hidden', !text);
+  if (text) holeProgressText.textContent = text;
+}
+
+function showHoleError(msg) {
+  holeError.textContent = msg || '';
+  holeError.classList.toggle('hidden', !msg);
+}
+
+document.getElementById('btnHolePhoto').addEventListener('click', () => {
+  if (!gridActive() || !grid.cell) {
+    notify('Primeiro escolha no mapa a peça que falta: a busca local procura a peça daquele buraco.', 'info');
+    document.getElementById('step1Title').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (!tablePhotos.some(p => !p.done)) {
+    notify('Anexe as fotos das peças soltas (as que ainda não foram concluídas) para procurar nelas.', 'info', 6000);
+    return;
+  }
+  holeInput.click();
+});
+holeRetake.addEventListener('click', () => holeInput.click());
+document.getElementById('holeClose').addEventListener('click', () => holeDialog.close());
+
+holeInput.addEventListener('change', async () => {
+  const file = holeInput.files && holeInput.files[0];
+  holeInput.value = '';
+  if (!file) return;
+  try {
+    const exif = await Camera.readExif(file);
+    Camera.learnFrom(exif);
+    Camera.warn(Camera.check(exif, 'board'), 'Foto do buraco');
+    hole.blob = await compressImage(file, 1600, 0.88);
+    hole.bmp = await createImageBitmap(hole.blob);
+  } catch (err) {
+    notify(err.message, 'error');
+    return;
+  }
+  hole.seed = { x: 0.5, y: 0.5 };
+  const n = Grid.cellNumber(grid.cell.col, grid.cell.row, currentPuzzle.cols);
+  document.getElementById('holeSub').textContent = `Peça nº ${n} · coluna ${grid.cell.col + 1}, linha ${grid.cell.row + 1}`;
+  showHoleError('');
+  setHoleBusy('');
+  drawHoleCanvas();
+  if (!holeDialog.open) holeDialog.showModal();
+});
+
+holeCanvas.addEventListener('pointerdown', (ev) => {
+  if (hole.busy || !hole.bmp) return;
+  const r = holeCanvas.getBoundingClientRect();
+  hole.seed = {
+    x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+    y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)),
+  };
+  showHoleError('');
+  drawHoleCanvas();
+});
+
+holeGo.addEventListener('click', async () => {
+  if (hole.busy || !hole.blob || !hasTarget()) return;
+  const active = tablePhotos.filter(p => !p.done);
+  if (!active.length) {
+    showHoleError('Todas as fotos estão concluídas. Toque no selo "concluída" de uma foto para voltar a incluí-la.');
+    return;
+  }
+  showHoleError('');
+  setHoleBusy(serviceStatus.api !== 'ok' ? 'Acordando o servidor… na primeira busca do dia pode levar até 1 minuto.' : 'Medindo o buraco e comparando as bordas…');
+  const cell = { ...grid.cell };
+  try {
+    if (apiWakeup) await apiWakeup;
+    const build = async (chunk) => {
+      const fd = new FormData();
+      Search.appendPhotos(fd, chunk);
+      fd.append('hole_file', hole.blob, 'hole.jpg');
+      fd.append('seed_x', String(hole.seed.x));
+      fd.append('seed_y', String(hole.seed.y));
+      fd.append('top_k', '5');
+      if (currentPuzzle.width_cm > 0) fd.append('piece_mm', String((currentPuzzle.width_cm * 10) / currentPuzzle.cols));
+      return fd;
+    };
+    const parts = [];
+    await Search.run('/api/local-search', active, build, {
+      parts, errorText: 'Não foi possível comparar o buraco com as peças.',
+      onBatch: ({ from, to, total }) => {
+        if (total > PHOTOS_PER_REQUEST) holeProgressText.textContent = `Comparando com as fotos ${from + 1}–${to} de ${total}…`;
+      },
+    });
+    const data = Search.mergeLocal(parts);
+    setServiceStatus('api', 'ok', 'Online');
+    hole.busy = false;
+    holeDialog.close();
+    Workspace.openFindResults(data, cell, { mode: 'hole' });
+    if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
+  } catch (err) {
+    setHoleBusy('');
+    showHoleError(err.name === 'AbortError' ? 'O servidor demorou demais para responder. Tente de novo em instantes.' : err.message);
+  }
+});
+
 // Registra a peça encontrada no histórico (e, no mapa, marca a célula como montada)
 async function registerFound({ cell = null, rotation = 0, shapeSimilarity = null } = {}) {
   const record = {
@@ -1564,6 +1700,8 @@ const mapContainer = document.getElementById('mapContainer');
 const mapImage = document.getElementById('mapImage');
 const mapPin = document.getElementById('mapPin');
 const cellNumber = document.getElementById('cellNumber');
+const cellColInput = document.getElementById('cellCol');
+const cellRowInput = document.getElementById('cellRow');
 const cellInfo = document.getElementById('cellInfo');
 const btnToggleCell = document.getElementById('btnToggleCell');
 const scanInput = document.getElementById('scanInput');
@@ -1633,6 +1771,8 @@ async function enterGridMode(puzzle, boxImageBlob) {
   step1Text.textContent = 'Escolha a peça que falta';
   step1Sub.textContent = 'no mapa ou pelo número';
   cellNumber.max = String(puzzle.cols * puzzle.rows);
+  cellColInput.max = String(puzzle.cols);
+  cellRowInput.max = String(puzzle.rows);
   grid.scanMap = (puzzle.scan_map && puzzle.scan_map.length === puzzle.cols * puzzle.rows) ? puzzle.scan_map : null;
   grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 3000);
   if (currentPuzzle !== puzzle) return;
@@ -1697,6 +1837,8 @@ function selectCell(col, row) {
   grid.cell = { col, row };
   const n = Grid.cellNumber(col, row, p.cols);
   if (String(cellNumber.value) !== String(n)) cellNumber.value = String(n);
+  cellColInput.value = String(col + 1);
+  cellRowInput.value = String(row + 1);
   const state = cellState(grid.cell);
   const stateText = state === '1' ? ' · já montada' : state === '0' ? ' · faltando' : '';
   cellInfo.textContent = `Coluna ${col + 1} · Linha ${row + 1}${stateText}`;
@@ -1718,6 +1860,24 @@ cellNumber.addEventListener('change', () => {
   const { col, row } = Grid.cellFromNumber(n, p.cols);
   selectCell(col, row);
 });
+
+// Coluna e linha: com as duas preenchidas e dentro da grade, seleciona a peça
+function onColRowInput() {
+  const p = currentPuzzle;
+  if (!p || !isGridPuzzle(p)) return;
+  const c = parseInt(cellColInput.value, 10), r = parseInt(cellRowInput.value, 10);
+  if (!cellColInput.value || !cellRowInput.value) return;
+  if (!(c >= 1 && c <= p.cols) || !(r >= 1 && r <= p.rows)) {
+    notify(`Coluna de 1 a ${p.cols} e linha de 1 a ${p.rows}.`, 'info');
+    return;
+  }
+  selectCell(c - 1, r - 1);
+}
+cellColInput.addEventListener('change', onColRowInput);
+cellRowInput.addEventListener('change', onColRowInput);
+for (const el of [cellColInput, cellRowInput]) {
+  el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); onColRowInput(); el.blur(); } });
+}
 
 async function persistScanMap() {
   const { error } = await supabaseClient.from('puzzles')

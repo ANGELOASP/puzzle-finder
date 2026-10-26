@@ -180,6 +180,11 @@
     .cam-chip:hover { color: #fff; box-shadow: inset 0 0 0 1px rgb(100 116 139); }
     .photo-warn { position: absolute; left: .25rem; bottom: .25rem; right: .25rem; padding: .1rem .35rem; border-radius: .375rem; font-size: 10px; font-weight: 700;
       color: rgb(254 243 199); background: rgb(120 53 15 / .85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #holeDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    @media (min-width: 768px) { #holeDialog { width: 46rem; height: auto; max-height: 94vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
+    #bankDialog, #learnDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+    @media (min-width: 768px) { #bankDialog, #learnDialog { width: 56rem; height: auto; max-height: 94vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } #bankDialog > div { max-height: 94vh; } }
+    #cmpFit { width: 100%; height: 100%; object-fit: contain; display: block; }
     #countDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
     @media (min-width: 768px) { #countDialog { width: 46rem; height: auto; max-height: 94vh; margin: auto; border-radius: 1.25rem; box-shadow: 0 0 0 1px rgb(30 41 59), 0 30px 80px -20px #000; } }
     #compareDialog { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
@@ -488,12 +493,21 @@
         <div class="panel">
           <div class="flex flex-wrap items-end gap-3">
             <div>
-              <label for="cellNumber" class="text-xs font-medium text-slate-400 block mb-1.5">Peça nº</label>
-              <input type="number" id="cellNumber" min="1" step="1" inputmode="numeric" placeholder="ex.: 1024" class="w-36 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
+              <label for="cellCol" class="text-xs font-medium text-slate-400 block mb-1.5">Coluna</label>
+              <input type="number" id="cellCol" min="1" step="1" inputmode="numeric" placeholder="1" class="w-24 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
             </div>
-            <p id="cellInfo" class="h-11 flex items-center text-sm text-slate-300">Toque no mapa ou digite o número</p>
+            <div>
+              <label for="cellRow" class="text-xs font-medium text-slate-400 block mb-1.5">Linha</label>
+              <input type="number" id="cellRow" min="1" step="1" inputmode="numeric" placeholder="1" class="w-24 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
+            </div>
+            <div>
+              <label for="cellNumber" class="text-xs font-medium text-slate-400 block mb-1.5">ou Peça nº</label>
+              <input type="number" id="cellNumber" min="1" step="1" inputmode="numeric" placeholder="ex.: 1024" class="w-32 h-11 bg-slate-950 ring-1 ring-inset ring-slate-700 focus:ring-2 focus:ring-emerald-400 focus:outline-none text-slate-100 text-[15px] px-3 rounded-xl tabular-nums">
+            </div>
+            <p id="cellInfo" class="min-h-11 flex items-center text-sm text-slate-300 basis-full sm:basis-auto">Toque no mapa ou digite a coluna e a linha</p>
           </div>
           <button type="button" id="btnToggleCell" class="hidden mt-3 h-10 px-3 rounded-xl text-sm font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700"></button>
+          <button type="button" class="js-learn mt-3 block text-xs font-semibold text-slate-400 underline underline-offset-2 h-8">Aprendizado: acerto real das buscas</button>
         </div>
         <div id="findSlotGrid" class="panel"></div>
       </div>
@@ -512,6 +526,10 @@
           </div>
           <div id="locateSummary" class="hidden flex flex-wrap gap-2 text-sm" aria-live="polite"></div>
           <p id="locateHint" class="hidden text-xs text-slate-400 leading-snug">As <strong class="text-emerald-300">certas</strong> acertam cerca de 9 em 10. As <strong class="text-amber-300">talvez</strong> acertam cerca de 6 em 10: confira na comparação antes de encaixar. Quanto mais peças você encaixa, mais as outras melhoram.</p>
+          <button type="button" class="js-learn btn-quiet w-full justify-center"><svg class="icon w-4 h-4"><use href="#i-sliders"/></svg>Aprendizado: acerto real das buscas</button>
+          <button type="button" id="btnBank" class="hidden btn-quiet w-full justify-center">
+            <svg class="icon w-4 h-4"><use href="#i-image"/></svg>Banco de peças · por cor e desenho · montagem virtual
+          </button>
           <button type="button" id="btnReviewSure" class="hidden btn-quiet w-full justify-center">
             <svg class="icon w-4 h-4"><use href="#i-check"/></svg><span id="btnReviewSureText">Conferir as certas em sequência</span>
           </button>
@@ -643,6 +661,13 @@
             <svg class="icon w-[18px] h-[18px]"><use href="#i-search"/></svg>
             <span id="btnFindText">Encontrar peça nas fotos</span>
           </button>
+
+          <!-- Foto de perto do buraco: busca local -->
+          <button id="btnHolePhoto" type="button" class="btn-quiet w-full">
+            <svg class="icon w-[18px] h-[18px]"><use href="#i-target"/></svg>
+            Foto do buraco · busca local
+          </button>
+          <input type="file" id="holeInput" accept="image/*" class="sr-only" tabindex="-1" aria-hidden="true">
 
           <!-- Scanner em tempo real -->
           <button id="btnOpenRealtimeScanner" class="btn-quiet w-full">
@@ -893,6 +918,105 @@
     </div>
   </dialog>
 
+  <dialog id="holeDialog" aria-labelledby="holeTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col h-full">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Busca local</p>
+          <h2 id="holeTitle" class="text-xl md:text-2xl font-extrabold tracking-tight leading-tight">Foto do buraco</h2>
+          <p id="holeSub" class="text-sm text-slate-400 mt-0.5"></p>
+        </div>
+        <button type="button" id="holeClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </header>
+      <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
+        <div id="holeFrame" class="rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-900 overflow-hidden">
+          <canvas id="holeCanvas" class="block w-full touch-none cursor-crosshair" aria-label="Foto do buraco: toque no meio da parte vazia"></canvas>
+        </div>
+        <p class="text-xs text-slate-400 leading-snug">Toque no meio da parte <strong class="text-slate-200">vazia</strong> do buraco para marcar o ponto (o círculo verde).</p>
+        <div id="holeError" class="hidden p-3 rounded-xl bg-amber-400/10 ring-1 ring-inset ring-amber-400/30 text-sm text-amber-200 leading-snug"></div>
+        <div id="holeProgress" class="hidden p-3 rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800 flex items-center gap-3" role="status">
+          <span class="inline-block w-5 h-5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0"></span>
+          <span id="holeProgressText" class="text-sm text-slate-200"></span>
+        </div>
+        <details class="rounded-xl bg-slate-900 ring-1 ring-inset ring-slate-800">
+          <summary class="cursor-pointer h-11 px-3 flex items-center text-sm font-semibold text-slate-300">Como fotografar o buraco</summary>
+          <ul class="px-4 pb-3 pt-1 list-disc pl-8 space-y-1.5 text-sm text-slate-300">
+            <li>De cima, com o <strong class="text-slate-100">topo do celular para o topo do quebra-cabeça</strong>, como na foto da caixa.</li>
+            <li>O buraco no meio, com as <strong class="text-slate-100">peças vizinhas em volta</strong> (as 4, se possível).</li>
+            <li>De perto: o buraco deve ocupar cerca de um terço da foto. Sem a sombra do celular e sem reflexo.</li>
+            <li>Lente 1×, sem zoom digital e sem flash.</li>
+          </ul>
+        </details>
+      </div>
+      <footer class="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-slate-800 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2">
+        <button type="button" id="holeRetake" class="btn-quiet h-12">Outra foto</button>
+        <button type="button" id="holeGo" class="btn-primary h-12">Buscar nas fotos</button>
+      </footer>
+    </div>
+  </dialog>
+
+
+  <dialog id="bankDialog" aria-labelledby="bankTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col h-full">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Quebra-cabeça</p>
+          <h2 id="bankTitle" class="text-xl md:text-2xl font-extrabold tracking-tight leading-tight">Banco de peças</h2>
+          <p id="bankCount" class="text-sm text-slate-400 mt-0.5"></p>
+        </div>
+        <button type="button" id="bankClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300"><svg class="icon"><use href="#i-x"/></svg></button>
+      </header>
+      <div class="px-4 pt-3">
+        <div class="seg w-full" role="tablist" aria-label="Banco de peças">
+          <button type="button" role="tab" id="bankTab-pieces" aria-selected="true"><span class="font-bold">Peças</span></button>
+          <button type="button" role="tab" id="bankTab-virtual" aria-selected="false"><span class="font-bold">Montagem virtual</span></button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-y-auto px-4 py-3">
+        <div id="bankPane-pieces" class="flex flex-col gap-2">
+          <div id="bankColors" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Cor"></div>
+          <div id="bankKinds" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Tipo"></div>
+          <div id="bankDetail" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Desenho"></div>
+          <div id="bankStatus" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Situação"></div>
+          <div id="bankPhotos" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Foto"></div>
+          <div id="bankSort" class="flex gap-1.5 overflow-x-auto pb-1" aria-label="Ordem"></div>
+          <p class="text-xs text-slate-400 leading-snug">As cores são separadas por semelhança entre as peças (a bolinha mostra a cor do grupo e o número, quantas peças). O selo na peça mostra o lugar sugerido no mapa; toque para comparar.</p>
+          <div id="bankGrid" class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-1.5"></div>
+        </div>
+        <div id="bankPane-virtual" class="hidden flex flex-col gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" id="bankZoomOut" class="btn-quiet !h-10 !px-3" aria-label="Diminuir"><svg class="icon w-4 h-4"><use href="#i-zoom-out"/></svg></button>
+            <button type="button" id="bankZoomIn" class="btn-quiet !h-10 !px-3" aria-label="Ampliar"><svg class="icon w-4 h-4"><use href="#i-zoom-in"/></svg></button>
+            <button type="button" id="bankMaybe" class="btn-quiet !h-10" aria-pressed="true"></button>
+          </div>
+          <p id="bankVirtualInfo" class="text-sm text-slate-300 leading-snug"></p>
+          <div class="overflow-auto rounded-xl ring-1 ring-inset ring-slate-800 bg-slate-900 max-h-[62vh]"><canvas id="bankCanvas" class="block cursor-pointer" aria-label="Quebra-cabeça montado virtualmente"></canvas></div>
+          <p class="text-xs text-slate-400 leading-snug">Verde: peça certa. Âmbar: talvez. As células escurecidas ainda não têm peça sugerida; as claras já estão montadas.</p>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="learnDialog" aria-labelledby="learnTitle" class="bg-slate-950 text-slate-100 p-0">
+    <div class="flex flex-col h-full">
+      <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Aprendizado contínuo</p>
+          <h2 id="learnTitle" class="text-xl md:text-2xl font-extrabold tracking-tight leading-tight">Acerto real das buscas</h2>
+          <p class="text-sm text-slate-400 mt-0.5">Cada "É essa!" e "Não é" entra aqui.</p>
+        </div>
+        <button type="button" id="learnClose" aria-label="Fechar" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300"><svg class="icon"><use href="#i-x"/></svg></button>
+      </header>
+      <div id="learnBody" class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-2"></div>
+      <footer class="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-slate-800 flex flex-col gap-2">
+        <p id="learnSync" class="text-xs text-slate-400"></p>
+        <button type="button" id="learnExport" class="btn-quiet h-12">Baixar os dados (JSON)</button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog id="countDialog" aria-labelledby="countTitle" class="bg-slate-950 text-slate-100 p-0">
     <div class="flex flex-col h-full">
       <header class="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-slate-800">
@@ -949,8 +1073,8 @@
       <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
         <div class="grid grid-cols-2 gap-3">
           <figure class="flex flex-col gap-1.5">
-            <div class="cmp-frame"><canvas id="cmpArt" width="360" height="360" aria-label="Arte da caixa em volta da célula"></canvas></div>
-            <figcaption class="text-xs text-slate-400 text-center"><span class="font-semibold text-slate-200">Na caixa</span> · <span id="cmpArtCap"></span></figcaption>
+            <div class="cmp-frame"><canvas id="cmpArt" width="360" height="360" aria-label="Arte da caixa em volta da célula"></canvas><img id="cmpFit" class="hidden" alt="Foto do buraco com a peça encaixada"></div>
+            <figcaption class="text-xs text-slate-400 text-center"><span id="cmpArtLabel" class="font-semibold text-slate-200">Na caixa</span> · <span id="cmpArtCap"></span></figcaption>
           </figure>
           <figure class="flex flex-col gap-1.5">
             <div class="cmp-frame"><img id="cmpPiece" alt="Peça encontrada na foto, já girada como deve encaixar"></div>
@@ -1014,5 +1138,7 @@
   <script src="session.js"></script>
   <script src="camera.js"></script>
   <script src="workspace.js"></script>
+  <script src="learn.js"></script>
+  <script src="bank.js"></script>
 </body>
 </html>
