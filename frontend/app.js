@@ -550,7 +550,8 @@ newPuzzleForm.addEventListener('submit', async (e) => {
 
     if (file) {
       // A arte precisa de detalhe: cada peça ocupa poucos pixels na foto da caixa
-      const compressedBlob = await compressImage(file, 2400, 0.9);
+      // Alta resolução: a comparação amplia a arte da caixa, e o detalhe que não foi guardado aqui não volta depois
+      const compressedBlob = await compressImage(file, 4096, 0.92);
       // Bucket privado: cada usuário grava na própria pasta
       const filePath = `${currentUser.id}/box_${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
       const { error: uploadError } = await supabaseClient.storage
@@ -1964,7 +1965,7 @@ async function enterGridMode(puzzle, boxImageBlob) {
   cellColInput.max = String(puzzle.cols);
   cellRowInput.max = String(puzzle.rows);
   grid.scanMap = (puzzle.scan_map && puzzle.scan_map.length === puzzle.cols * puzzle.rows) ? puzzle.scan_map : null;
-  grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 3000);
+  grid.boxBitmap = await Grid.loadBitmap(boxImageBlob, 4096);
   if (currentPuzzle !== puzzle) return;
   updateGridCounts();
   Workspace.refresh({ autoOpen: true });
