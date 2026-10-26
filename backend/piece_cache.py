@@ -12,11 +12,15 @@ Descarte: ao encher, só saem as fotos paradas há mais de STALE_SECONDS; se ain
 ser guardada. (Descartar sempre a mais antiga seria pior: as buscas percorrem as fotos em sequência e, com mais fotos
 do que o cache comporta, cada uma sairia justo antes de ser usada de novo e nenhuma acertaria.)
 """
+import base64
 import hashlib
+import io
+import json
 import os
 import pickle
 import threading
 import time
+import zipfile
 from collections import OrderedDict
 
 import cv2
@@ -104,6 +108,102 @@ def unpack(blob):
     return CachedPhoto(meta), pieces
 
 
+# ---------- Formato seguro para o banco (sem pickle) ----------
+# O cache em memória usa pickle porque só o próprio servidor escreve nele. O que vai para o banco pode ser gravado por
+# qualquer participante do projeto, então fica num zip com JSON tipado, imagens e números: nada que execute código.
+SAFE_VERSION = 1
+MAX_SAFE_BYTES = 60 * 1024 * 1024
+_SAFE_KINDS = set("biuf")
+
+
+def _jenc(v):
+    if v is None or isinstance(v, (bool, str)):
+        return v
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        return float(v)
+    if isinstance(v, tuple):
+        return {"__t": [_jenc(x) for x in v]}
+    if isinstance(v, list):
+        return [_jenc(x) for x in v]
+    if isinstance(v, dict):
+        return {"__d": [[_jenc(k), _jenc(x)] for k, x in v.items()]}
+    if isinstance(v, np.ndarray):
+        return {"__nd": {"d": v.dtype.str, "s": list(v.shape), "b": base64.b64encode(v.tobytes()).decode("ascii")}}
+    raise TypeError(type(v))
+
+
+def _jdec(v):
+    if isinstance(v, list):
+        return [_jdec(x) for x in v]
+    if isinstance(v, dict):
+        if "__t" in v:
+            return tuple(_jdec(x) for x in v["__t"])
+        if "__d" in v:
+            return {_jdec(k): _jdec(x) for k, x in v["__d"]}
+        if "__nd" in v:
+            n = v["__nd"]
+            dt = np.dtype(n["d"])
+            if dt.kind not in _SAFE_KINDS:
+                raise ValueError("tipo de matriz inválido")
+            return np.frombuffer(base64.b64decode(n["b"]), dt).reshape(n["s"]).copy()
+        raise ValueError("objeto inválido")
+    return v
+
+
+def to_safe(blob):
+    """Converte o bloco do cache (pickle próprio) no zip seguro do banco."""
+    meta, items = pickle.loads(blob)
+    out = io.BytesIO()
+    index = []
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:  # imagens já vêm comprimidas
+        for i, d in enumerate(items):
+            fields = {}
+            for k, entry in d.items():
+                kind = entry[0]
+                if kind in ("img", "png"):
+                    z.writestr(f"p{i}/{k}", entry[1])
+                    fields[k] = [kind]
+                elif kind == "np":
+                    z.writestr(f"p{i}/{k}", entry[1])
+                    fields[k] = ["np", entry[2], list(entry[3])]
+                else:
+                    fields[k] = ["raw", _jenc(entry[1])]
+            index.append(fields)
+        z.writestr("meta.json", json.dumps({"v": SAFE_VERSION, "meta": _jenc(meta), "items": index}))
+    return out.getvalue()
+
+
+def from_safe(data):
+    """Zip seguro do banco → bloco do cache. Levanta ValueError se não for um arquivo válido deste formato."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if sum(i.file_size for i in z.infolist()) > MAX_SAFE_BYTES or len(z.infolist()) > 20000:
+                raise ValueError("arquivo grande demais")
+            head = json.loads(z.read("meta.json"))
+            if head.get("v") != SAFE_VERSION:
+                raise ValueError("versão desconhecida")
+            meta = _jdec(head["meta"])
+            items = []
+            for i, fields in enumerate(head["items"]):
+                d = {}
+                for k, f in fields.items():
+                    if f[0] in ("img", "png"):
+                        d[k] = (f[0], z.read(f"p{i}/{k}"))
+                    elif f[0] == "np":
+                        dt = np.dtype(f[1])
+                        if dt.kind not in _SAFE_KINDS:
+                            raise ValueError("tipo de matriz inválido")
+                        d[k] = ("np", z.read(f"p{i}/{k}"), f[1], tuple(f[2]))
+                    else:
+                        d[k] = ("raw", _jdec(f[1]))
+                items.append(d)
+    except (zipfile.BadZipFile, KeyError, TypeError, IndexError, json.JSONDecodeError) as err:
+        raise ValueError(str(err))
+    return pickle.dumps((meta, items), protocol=4)
+
+
 class PieceCache:
     """Cache por bytes, seguro para vários pedidos ao mesmo tempo (descarte: ver o topo do arquivo)."""
 
@@ -126,6 +226,32 @@ class PieceCache:
             self._items.move_to_end(key)
             blob = entry[0]
         return unpack(blob)
+
+    def get_blob(self, key):
+        with self._lock:
+            entry = self._items.get(key)
+            return None if entry is None else entry[0]
+
+    def put_blob(self, key, blob):
+        """Guarda um bloco já pronto (vindo do banco); mesma regra de espaço do put."""
+        if self.max_bytes <= 0 or len(blob) > self.max_bytes:
+            return False
+        now = time.time()
+        with self._lock:
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._bytes -= len(old[0])
+            self._items[key] = [blob, now]
+            self._bytes += len(blob)
+            for k in list(self._items):
+                if self._bytes <= self.max_bytes or k == key:
+                    break
+                if now - self._items[k][1] > STALE_SECONDS:
+                    self._bytes -= len(self._items.pop(k)[0])
+            if self._bytes > self.max_bytes:
+                self._bytes -= len(self._items.pop(key)[0])
+                return False
+        return True
 
     def put(self, key, photo, pieces):
         if self.max_bytes <= 0:

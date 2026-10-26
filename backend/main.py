@@ -8,6 +8,7 @@ import grid_engine
 import local_search
 import piece_cache
 import piece_look
+import piece_bank
 import hole_ring
 from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
@@ -94,7 +95,15 @@ app = FastAPI(title="PuzzleFinder API")
 async def remember_request_id(request, call_next):
     # O app manda um id por pedido para perguntar a posição na fila enquanto espera
     request_id_var.set(request.headers.get("x-request-id"))
+    auth = request.headers.get("authorization") or ""
+    piece_bank.token_var.set(auth[7:] if auth.lower().startswith("bearer ") else None)
+    piece_bank.puzzle_var.set((request.headers.get("x-puzzle-id") or "").lower() or None)
     return await call_next(request)
+
+
+@app.get("/api/bank-stats")
+async def bank_stats():
+    return {**piece_bank.stats, "enabled": piece_bank.ENABLED, "cache": piece_cache.cache.stats()}
 
 
 @app.get("/api/queue/{request_id}")
@@ -116,6 +125,7 @@ SUPABASE_ANON_KEY = os.environ.get(
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmanhjc3Z4aGFvamJ0dWl4cGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEyMzU5NjYsImV4cCI6MjEwNjgxMTk2Nn0.gKx3hutXIkemUfVR_O7MFnibpUxY_tYslNSY1D1M4ds",
 )
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() != "false"
+piece_bank.configure(SUPABASE_URL, SUPABASE_ANON_KEY)
 # O scanner manda vários quadros por segundo: guarda tokens já validados por alguns minutos
 TOKEN_CACHE_SECONDS = 300
 _token_cache = {}
@@ -265,7 +275,11 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
     """
     suffix = "-" + ("x" if not piece_mm else f"{piece_mm:.2f}") + f"-{MAX_TABLE_SIDE}"
     # Antes de qualquer trabalho: as fotos que o app não reenviou precisam estar no cache (senão ele reenvia)
-    missing = [t.key for t in tables if isinstance(t, PhotoRef) and (need_image or not t.key.endswith(suffix) or not piece_cache.cache.has(t.key))]
+    def known(t):
+        # Foto que o app não reenviou: está no cache em memória ou, depois de um reinício, no banco de peças
+        return piece_cache.cache.has(t.key) or piece_bank.load(t.key)
+
+    missing = [t.key for t in tables if isinstance(t, PhotoRef) and (need_image or not t.key.endswith(suffix) or not known(t))]
     if missing:
         raise HTTPException(status_code=409, detail={"missing": missing})
     photos, pieces = [], []
@@ -279,6 +293,8 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
             key = piece_cache.photo_key(data, piece_mm, MAX_TABLE_SIDE)
             if not need_image:
                 hit = piece_cache.cache.get(key)
+                if hit is None and piece_bank.load(key):  # já separada antes (outro aparelho, ou antes de um reinício)
+                    hit = piece_cache.cache.get(key)
         if hit is not None:
             photo, found = hit
         else:
@@ -293,6 +309,8 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
             photo.pieces = len(found)
             photo.key = key
             piece_cache.cache.put(key, photo, found)
+            if not need_image:
+                piece_bank.save_async(key)
             if not need_image:
                 # Usa a mesma versão (comprimida) que as próximas buscas vão ler do cache: o resultado de uma busca
                 # não depende de a foto já estar guardada ou não

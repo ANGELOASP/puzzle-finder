@@ -97,7 +97,7 @@ const Search = (() => {
         const stop = watchQueue(rid);
         try {
           return await fetchWithRetry(`${getApiUrl()}${path}`, {
-            method: 'POST', headers: { ...(await authHeaders()), 'X-Request-Id': rid }, body: await buildForm(chunk),
+            method: 'POST', headers: { ...(await authHeaders()), 'X-Request-Id': rid, ...(currentPuzzle ? { 'X-Puzzle-Id': currentPuzzle.id } : {}) }, body: await buildForm(chunk),
           }, timeoutMs);
         } finally { stop(); }
       };
