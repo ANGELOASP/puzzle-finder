@@ -1298,10 +1298,21 @@ const Workspace = (() => {
   });
 
   setMode('find');
+  // Vizinhas reais de um buraco fotografado: cada uma é um par (aparência real, arte da célula) para calibrar a cor
+  function addRing(pairs, cell) {
+    let n = 0;
+    for (const p of pairs) {
+      if (p.col === cell.col && p.row === cell.row) continue;
+      calibAdd(p.sig, { col: p.col, row: p.row }, 0);
+      n++;
+    }
+    if (n) notify(`Cor da caixa ajustada com ${n} ${n === 1 ? 'vizinha real' : 'vizinhas reais'} do buraco.`, 'info', 4500);
+  }
+
   // Para o banco de peças
   function bankApi() {
     return { pieces: state.located ? state.located.pieces : [], placed: state.placedPieces, placeOf, openLocate };
   }
 
-  return { remoteChanged, bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
+  return { addRing, remoteChanged, bankApi, onGridMode, refresh, onScanned, onPhotosChanged, onMapTap, openFindResults, calibPayload, leavePuzzle, get mode() { return state.mode; } };
 })();

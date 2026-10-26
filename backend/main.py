@@ -8,6 +8,8 @@ import grid_engine
 import local_search
 import piece_cache
 import piece_look
+import piece_bank
+import hole_ring
 from paper import TablePhoto, balance_pieces_on_background
 from puzzle_engine import PuzzleEngine
 
@@ -93,7 +95,15 @@ app = FastAPI(title="PuzzleFinder API")
 async def remember_request_id(request, call_next):
     # O app manda um id por pedido para perguntar a posição na fila enquanto espera
     request_id_var.set(request.headers.get("x-request-id"))
+    auth = request.headers.get("authorization") or ""
+    piece_bank.token_var.set(auth[7:] if auth.lower().startswith("bearer ") else None)
+    piece_bank.puzzle_var.set((request.headers.get("x-puzzle-id") or "").lower() or None)
     return await call_next(request)
+
+
+@app.get("/api/bank-stats")
+async def bank_stats():
+    return {**piece_bank.stats, "enabled": piece_bank.ENABLED, "cache": piece_cache.cache.stats()}
 
 
 @app.get("/api/queue/{request_id}")
@@ -115,6 +125,7 @@ SUPABASE_ANON_KEY = os.environ.get(
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmanhjc3Z4aGFvamJ0dWl4cGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEyMzU5NjYsImV4cCI6MjEwNjgxMTk2Nn0.gKx3hutXIkemUfVR_O7MFnibpUxY_tYslNSY1D1M4ds",
 )
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() != "false"
+piece_bank.configure(SUPABASE_URL, SUPABASE_ANON_KEY)
 # O scanner manda vários quadros por segundo: guarda tokens já validados por alguns minutos
 TOKEN_CACHE_SECONDS = 300
 _token_cache = {}
@@ -264,7 +275,11 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
     """
     suffix = "-" + ("x" if not piece_mm else f"{piece_mm:.2f}") + f"-{MAX_TABLE_SIDE}"
     # Antes de qualquer trabalho: as fotos que o app não reenviou precisam estar no cache (senão ele reenvia)
-    missing = [t.key for t in tables if isinstance(t, PhotoRef) and (need_image or not t.key.endswith(suffix) or not piece_cache.cache.has(t.key))]
+    def known(t):
+        # Foto que o app não reenviou: está no cache em memória ou, depois de um reinício, no banco de peças
+        return piece_cache.cache.has(t.key) or piece_bank.load(t.key)
+
+    missing = [t.key for t in tables if isinstance(t, PhotoRef) and (need_image or not t.key.endswith(suffix) or not known(t))]
     if missing:
         raise HTTPException(status_code=409, detail={"missing": missing})
     photos, pieces = [], []
@@ -278,6 +293,8 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
             key = piece_cache.photo_key(data, piece_mm, MAX_TABLE_SIDE)
             if not need_image:
                 hit = piece_cache.cache.get(key)
+                if hit is None and piece_bank.load(key):  # já separada antes (outro aparelho, ou antes de um reinício)
+                    hit = piece_cache.cache.get(key)
         if hit is not None:
             photo, found = hit
         else:
@@ -292,6 +309,8 @@ def segment_tables(tables, piece_mm=None, need_image=False, allow_empty=False):
             photo.pieces = len(found)
             photo.key = key
             piece_cache.cache.put(key, photo, found)
+            if not need_image:
+                piece_bank.save_async(key)
             if not need_image:
                 # Usa a mesma versão (comprimida) que as próximas buscas vão ler do cache: o resultado de uma busca
                 # não depende de a foto já estar guardada ou não
@@ -597,16 +616,30 @@ async def hole_shape(
     hole_file: UploadFile = File(...),
     seed_x: float = Form(0.5),
     seed_y: float = Form(0.5),
+    box_file: Optional[UploadFile] = File(None),
+    box_key: Optional[str] = Form(None),
+    cols: Optional[int] = Form(None),
+    rows: Optional[int] = Form(None),
+    col: Optional[int] = Form(None),
+    row: Optional[int] = Form(None),
+    scan_map: Optional[str] = Form(None),
+    aspect: float = Form(1.0),
     user_id: Optional[str] = Depends(require_user),
 ):
     """Mede só o buraco (formato dos 4 lados e onde ele está na imagem): resposta na hora, sem comparar com as peças."""
     data = await read_upload(hole_file)
     if data is None:
         raise HTTPException(status_code=400, detail="Envie a foto do buraco.")
-    return await run_in_threadpool(process_hole_shape, data, (seed_x, seed_y))
+    # Com a arte e a célula, devolve também as vizinhas reais como pares de calibração de cor (hole_ring)
+    box_bytes, new_key = None, None
+    if None not in (cols, rows, col, row) and (box_file is not None or box_key):
+        check_grid(cols, rows)
+        box_bytes, new_key = await read_art(box_file, box_key)
+    return await run_in_threadpool(process_hole_shape, data, (seed_x, seed_y), box_bytes, new_key, cols, rows, col, row, scan_map,
+                                   max(0.5, min(2.0, aspect)))
 
 
-def process_hole_shape(data, seed):
+def process_hole_shape(data, seed, box_bytes=None, box_key=None, cols=None, rows=None, col=None, row=None, scan_map=None, aspect=1.0):
     img = img_bytes_to_cv2(data, 1600)
     try:
         hole = local_search.segment_hole(img, seed)
@@ -614,7 +647,15 @@ def process_hole_shape(data, seed):
         raise HTTPException(status_code=422, detail=str(err))
     ys, xs = np.nonzero(hole["mask"])
     h, w = hole["mask"].shape[:2]
+    ring = None
+    if box_bytes is not None:
+        try:
+            ring = hole_ring.neighbour_pairs(hole, img_bytes_to_cv2(box_bytes), cols, rows, col, row, scan_map, aspect)
+        except Exception:  # a calibração é um extra: nunca derruba a medição do buraco
+            ring = None
     return {
+        "ring": ring,
+        "box_key": box_key,
         "shapes": hole["shapes"],
         "box": [float(xs.min()) / w, float(ys.min()) / h, float(xs.max() + 1) / w, float(ys.max() + 1) / h],
         "preview_base64": cv2_to_base64_jpeg(local_search.draw_hole(hole), quality=80),
