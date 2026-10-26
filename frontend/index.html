@@ -392,7 +392,8 @@
             </div>
             <div class="flex flex-wrap gap-2">
               <button type="button" id="btnEditCorners" class="btn-quiet">Ajustar cantos</button>
-              <button type="button" id="btnBoxPhoto" class="btn-quiet">Trocar foto da caixa</button>
+              <button type="button" id="btnBoxShoot" class="btn-quiet"><svg class="icon w-4 h-4"><use href="#i-camera"/></svg>Tirar foto da caixa</button>
+              <button type="button" id="btnBoxPhoto" class="btn-quiet">Escolher da galeria</button>
             </div>
           </div>
         </li>
@@ -905,6 +906,12 @@
         </fieldset>
         <div>
           <label for="newPuzzleBoxFile" class="text-xs font-medium text-slate-400 block mb-1.5" id="newPuzzleBoxLabel">Foto da arte (caixa ou pôster), de frente e bem nítida</label>
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <button type="button" id="btnBoxCamera" class="btn-primary !h-11"><svg class="icon w-[18px] h-[18px]"><use href="#i-camera"/></svg>Tirar foto da caixa</button>
+            <span class="text-xs text-slate-500">ou escolha da galeria:</span>
+          </div>
+          <p id="boxPicked" class="text-xs text-emerald-300 mb-1.5" role="status"></p>
+          <input type="file" id="newPuzzleBoxCamera" accept="image/*" capture="environment" class="sr-only" tabindex="-1" aria-hidden="true">
           <input type="file" id="newPuzzleBoxFile" required accept="image/*" class="w-full text-sm text-slate-400 file:mr-3 file:h-10 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-800 file:text-slate-100 hover:file:bg-slate-700">
         </div>
       </div>

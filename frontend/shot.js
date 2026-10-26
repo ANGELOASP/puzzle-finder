@@ -13,6 +13,7 @@ const Shot = (() => {
 
   const GUIDES = {
     hole: 'Centralize o buraco: ele deve ocupar cerca de um terço da foto, com as peças vizinhas em volta. Topo do celular para o topo do quebra-cabeça.',
+    box: 'Foto da caixa (ou pôster) de frente, de cima, com a arte inteira e as 4 pontas à vista. Sem reflexo nem sombra: é dela que sai o detalhe da comparação.',
     board: 'Enquadre o quebra-cabeça inteiro, com as 4 pontas à vista, de cima e sem sombra.',
     pieces: 'Peças espalhadas sobre a folha branca (A4), sem se tocar, de cima e sem sombra do celular.',
   };
@@ -166,6 +167,27 @@ const Shot = (() => {
   bind($('holeInput'), { title: 'Foto do buraco', guide: 'hole' });
   bind($('tableInput'), { title: 'Foto das peças', guide: 'pieces' });
   bind($('scanInput'), { title: 'Foto do tabuleiro', guide: 'board' });
+
+  // Foto da caixa: o botão "Tirar foto" do cadastro abre esta câmera e entrega o arquivo ao campo da foto da arte
+  const boxCam = $('newPuzzleBoxCamera');
+  bind(boxCam, { title: 'Foto da caixa', guide: 'box' });
+  $('btnBoxCamera').addEventListener('click', () => boxCam.click());
+  boxCam.addEventListener('change', () => {
+    if (!boxCam.files || !boxCam.files[0]) return;
+    const dt = new DataTransfer();
+    dt.items.add(boxCam.files[0]);
+    $('newPuzzleBoxFile').files = dt.files;
+    $('newPuzzleBoxFile').dispatchEvent(new Event('change', { bubbles: true }));
+    $('boxPicked').textContent = 'Foto tirada: pronta para salvar.';
+    boxCam.value = '';
+  });
+  $('newPuzzleBoxFile').addEventListener('change', () => {
+    const f = $('newPuzzleBoxFile').files && $('newPuzzleBoxFile').files[0];
+    if (f) $('boxPicked').textContent = `Foto escolhida: ${f.name}`;
+  });
+  $('newPuzzleBoxFile').form.addEventListener('reset', () => { $('boxPicked').textContent = ''; });
+  // Passo "Caixa" do assistente: abre o cadastro já com a câmera
+  $('btnBoxShoot').addEventListener('click', () => { $('btnEditPuzzle').click(); setTimeout(() => boxCam.click(), 250); });
 
   return { open, supported };
 })();
