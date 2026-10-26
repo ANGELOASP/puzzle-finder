@@ -1545,25 +1545,136 @@ const holeProgressText = document.getElementById('holeProgressText');
 const holeGo = document.getElementById('holeGo');
 const holeRetake = document.getElementById('holeRetake');
 const holeInput = document.getElementById('holeInput');
-const hole = { blob: null, bmp: null, seed: { x: 0.5, y: 0.5 }, busy: false };
+// Vista da foto: recorte de largura `w` (em pixels da foto) centrado em (cx, cy), no formato 4:3 da tela.
+// O que aparece na tela é o que vai para a busca: amplie até o buraco ocupar cerca de 1/3 da imagem.
+const hole = { bmp: null, seed: null, view: { cx: 0, cy: 0, w: 1 }, busy: false };
+const HOLE_VIEW_W = 800, HOLE_VIEW_H = 600;
+
+function holeFullW() { return Math.max(hole.bmp.width, (hole.bmp.height * 4) / 3); }
+
+function holeClampView() {
+  const v = hole.view, full = holeFullW();
+  v.w = Math.min(full, Math.max(60, v.w));
+  const h = (v.w * 3) / 4;
+  v.cx = Math.min(hole.bmp.width - Math.min(v.w, hole.bmp.width) / 2, Math.max(Math.min(v.w, hole.bmp.width) / 2, v.cx));
+  v.cy = Math.min(hole.bmp.height - Math.min(h, hole.bmp.height) / 2, Math.max(Math.min(h, hole.bmp.height) / 2, v.cy));
+}
+
+// Região da foto que a vista mostra (já limitada à foto)
+function holeViewRect() {
+  const v = hole.view, h = (v.w * 3) / 4;
+  const x0 = v.cx - v.w / 2, y0 = v.cy - h / 2;
+  return { x: x0, y: y0, w: v.w, h };
+}
 
 function drawHoleCanvas() {
   if (!hole.bmp) return;
-  const bmp = hole.bmp;
-  holeCanvas.width = bmp.width;
-  holeCanvas.height = bmp.height;
+  holeCanvas.width = HOLE_VIEW_W;
+  holeCanvas.height = HOLE_VIEW_H;
   const ctx = holeCanvas.getContext('2d');
-  ctx.drawImage(bmp, 0, 0);
-  const x = hole.seed.x * bmp.width, y = hole.seed.y * bmp.height;
-  const r = Math.max(14, Math.min(bmp.width, bmp.height) * 0.04);
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.lineWidth = r * 0.45;
-  ctx.strokeStyle = 'rgba(2, 6, 23, 0.8)';
-  ctx.stroke();
-  ctx.lineWidth = r * 0.25;
-  ctx.strokeStyle = '#34d399';
-  ctx.stroke();
+  const r = holeViewRect(), k = HOLE_VIEW_W / r.w;
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(0, 0, HOLE_VIEW_W, HOLE_VIEW_H);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(hole.bmp, -r.x * k, -r.y * k, hole.bmp.width * k, hole.bmp.height * k);
+  if (hole.seed) {
+    const x = (hole.seed.x - r.x) * k, y = (hole.seed.y - r.y) * k;
+    const rad = 16;
+    ctx.beginPath();
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = 'rgba(2, 6, 23, 0.85)';
+    ctx.stroke();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#34d399';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#34d399';
+    ctx.fill();
+  }
+  const zoom = holeFullW() / hole.view.w;
+  document.getElementById('holeZoomInfo').textContent = zoom < 1.15 ? 'Foto inteira' : `${zoom.toFixed(1)}×`;
+}
+
+function holeZoomTo(factor, cx = hole.view.cx, cy = hole.view.cy) {
+  hole.view.cx = cx;
+  hole.view.cy = cy;
+  hole.view.w = hole.view.w / factor;
+  holeClampView();
+  drawHoleCanvas();
+}
+
+// Recorte (o que a vista mostra) em JPEG de até 1600 px, e o ponto marcado dentro dele (0..1)
+async function holeCrop() {
+  const r = holeViewRect();
+  const sx = Math.max(0, r.x), sy = Math.max(0, r.y);
+  const sw = Math.min(hole.bmp.width, r.x + r.w) - sx, sh = Math.min(hole.bmp.height, r.y + r.h) - sy;
+  const seed = { x: (hole.seed.x - sx) / sw, y: (hole.seed.y - sy) / sh };
+  if (seed.x < 0 || seed.x > 1 || seed.y < 0 || seed.y > 1) return null;
+  const k = Math.min(1, 1600 / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  c.getContext('2d').drawImage(hole.bmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
+  return { blob, seed, px: Math.max(sw, sh) };
+}
+
+// Escaneia o ponto na hora: mede o formato do buraco (aba/encaixe/reto nos 4 lados) e mostra onde ele está.
+// Se o buraco aparece pequeno na vista, aproxima sozinho até ocupar cerca de 1/3 e mede de novo.
+let holeScanId = 0;
+// `tries`: quantas vezes pode aproximar e medir de novo quando o buraco não aparece bem na vista
+async function scanHole(tries) {
+  const id = ++holeScanId;
+  const box = document.getElementById('holeShapeBox');
+  const crop = await holeCrop();
+  if (!crop || !hole.seed) return;
+  box.classList.remove('hidden');
+  document.getElementById('holeShapeText').textContent = 'Medindo o buraco…';
+  document.getElementById('holeShapeImg').classList.add('hidden');
+  try {
+    if (apiWakeup) await apiWakeup;
+    const fd = new FormData();
+    fd.append('hole_file', crop.blob, 'hole.jpg');
+    fd.append('seed_x', String(crop.seed.x));
+    fd.append('seed_y', String(crop.seed.y));
+    const res = await fetchWithTimeout(`${getApiUrl()}/api/hole-shape`, { method: 'POST', headers: await authHeaders(), body: fd }, 60000);
+    if (id !== holeScanId) return;
+    if (!res.ok) {
+      // Foto aberta demais (tabuleiro inteiro): aproxima do ponto marcado e mede de novo
+      if (tries > 0 && res.status === 422 && hole.view.w > 150) {
+        document.getElementById('holeShapeText').textContent = 'Aproximando do ponto marcado…';
+        holeZoomTo(3, hole.seed.x, hole.seed.y);
+        return scanHole(tries - 1);
+      }
+      box.classList.add('hidden');
+      showHoleError(await apiErrorMessage(res, 'Não consegui medir o buraco neste ponto.'));
+      return;
+    }
+    const d = await res.json();
+    if (id !== holeScanId) return;
+    const [x0, y0, x1, y1] = d.box;
+    const bw = x1 - x0;
+    if (tries > 0 && bw < 0.2) {
+      // Buraco pequeno na vista: centraliza e aproxima até ocupar ~35% da largura, e mede de novo
+      const r = holeViewRect();
+      const sx = Math.max(0, r.x), sy = Math.max(0, r.y);
+      const sw = Math.min(hole.bmp.width, r.x + r.w) - sx, sh = Math.min(hole.bmp.height, r.y + r.h) - sy;
+      hole.seed = { x: sx + ((x0 + x1) / 2) * sw, y: sy + ((y0 + y1) / 2) * sh };
+      hole.view.cx = hole.seed.x; hole.view.cy = hole.seed.y;
+      hole.view.w = (bw * sw) / 0.35;
+      holeClampView();
+      drawHoleCanvas();
+      return scanHole(tries - 1);
+    }
+    document.getElementById('holeShapeImg').src = `data:image/jpeg;base64,${d.preview_base64}`;
+    document.getElementById('holeShapeImg').classList.remove('hidden');
+    const n = Grid.cellNumber(grid.cell.col, grid.cell.row, currentPuzzle.cols);
+    document.getElementById('holeShapeText').textContent = `Peça nº ${n} (coluna ${grid.cell.col + 1}, linha ${grid.cell.row + 1}). ${holeLabel(d.shapes) || ''}`.replace('Formato do buraco considerado:', 'Formato medido:');
+    showHoleError('');
+  } catch (err) {
+    if (id === holeScanId) { box.classList.add('hidden'); showHoleError(err.message); }
+  }
 }
 
 function setHoleBusy(text) {
@@ -1602,13 +1713,16 @@ for (const input of [holeInput, document.getElementById('holeInputGallery')]) in
     const exif = await Camera.readExif(file);
     Camera.learnFrom(exif);
     Camera.warn(Camera.check(exif, 'board'), 'Foto do buraco');
-    hole.blob = await compressImage(file, 1600, 0.88);
-    hole.bmp = await createImageBitmap(hole.blob);
+    // Alta resolução: o buraco costuma ser uma parte pequena da foto e a vista recorta dela
+    hole.bmp = await createImageBitmap(await compressImage(file, 4096, 0.9));
   } catch (err) {
     notify(err.message, 'error');
     return;
   }
-  hole.seed = { x: 0.5, y: 0.5 };
+  hole.seed = null;
+  document.getElementById('holeShapeBox').classList.add('hidden');
+  hole.view = { cx: hole.bmp.width / 2, cy: hole.bmp.height / 2, w: holeFullW() };
+  holeClampView();
   const n = Grid.cellNumber(grid.cell.col, grid.cell.row, currentPuzzle.cols);
   document.getElementById('holeSub').textContent = `Peça nº ${n} · coluna ${grid.cell.col + 1}, linha ${grid.cell.row + 1}`;
   showHoleError('');
@@ -1617,19 +1731,69 @@ for (const input of [holeInput, document.getElementById('holeInputGallery')]) in
   if (!holeDialog.open) holeDialog.showModal();
 });
 
-holeCanvas.addEventListener('pointerdown', (ev) => {
-  if (hole.busy || !hole.bmp) return;
-  const r = holeCanvas.getBoundingClientRect();
-  hole.seed = {
-    x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
-    y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)),
+// Toque marca o ponto; arrastar move a foto; pinça (ou rolagem do mouse) amplia
+{
+  const ptrs = new Map();
+  let moved = false, pinch = 0;
+  const toPhoto = (ev) => {
+    const b = holeCanvas.getBoundingClientRect(), r = holeViewRect();
+    return { x: r.x + ((ev.clientX - b.left) / b.width) * r.w, y: r.y + ((ev.clientY - b.top) / b.height) * r.h };
   };
-  showHoleError('');
-  drawHoleCanvas();
-});
+  holeCanvas.addEventListener('pointerdown', (ev) => {
+    if (hole.busy || !hole.bmp) return;
+    holeCanvas.setPointerCapture(ev.pointerId);
+    ptrs.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, sx: ev.clientX, sy: ev.clientY });
+    moved = false;
+    if (ptrs.size === 2) { const [p1, p2] = [...ptrs.values()]; pinch = Math.hypot(p2.x - p1.x, p2.y - p1.y); } else pinch = 0;
+  });
+  holeCanvas.addEventListener('pointermove', (ev) => {
+    const p = ptrs.get(ev.pointerId);
+    if (!p) return;
+    const b = holeCanvas.getBoundingClientRect(), r = holeViewRect();
+    if (ptrs.size === 2) {
+      p.x = ev.clientX; p.y = ev.clientY;
+      const [p1, p2] = [...ptrs.values()];
+      const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      if (pinch > 0 && d > 0) {
+        const mid = toPhoto({ clientX: (p1.x + p2.x) / 2, clientY: (p1.y + p2.y) / 2 });
+        holeZoomTo(d / pinch, mid.x, mid.y);
+      }
+      pinch = d; moved = true;
+      return;
+    }
+    if (!moved && Math.hypot(ev.clientX - p.sx, ev.clientY - p.sy) < 8) return;
+    moved = true;
+    hole.view.cx -= ((ev.clientX - p.x) / b.width) * r.w;
+    hole.view.cy -= ((ev.clientY - p.y) / b.height) * r.h;
+    p.x = ev.clientX; p.y = ev.clientY;
+    holeClampView();
+    drawHoleCanvas();
+  });
+  const end = (ev) => {
+    const p = ptrs.get(ev.pointerId);
+    ptrs.delete(ev.pointerId);
+    if (!p || moved || hole.busy) return;
+    hole.seed = toPhoto(ev);
+    showHoleError('');
+    drawHoleCanvas();
+    scanHole(3);
+  };
+  holeCanvas.addEventListener('pointerup', end);
+  holeCanvas.addEventListener('pointercancel', (ev) => ptrs.delete(ev.pointerId));
+  holeCanvas.addEventListener('wheel', (ev) => {
+    if (!hole.bmp) return;
+    ev.preventDefault();
+    const at = toPhoto(ev);
+    holeZoomTo(ev.deltaY < 0 ? 1.25 : 0.8, at.x, at.y);
+  }, { passive: false });
+  document.getElementById('holeZoomIn').addEventListener('click', () => { if (hole.bmp) holeZoomTo(2, hole.seed ? hole.seed.x : hole.view.cx, hole.seed ? hole.seed.y : hole.view.cy); });
+  document.getElementById('holeZoomOut').addEventListener('click', () => { if (hole.bmp) holeZoomTo(0.5); });
+  document.getElementById('holeZoomAll').addEventListener('click', () => { if (hole.bmp) { hole.view = { cx: hole.bmp.width / 2, cy: hole.bmp.height / 2, w: holeFullW() }; holeClampView(); drawHoleCanvas(); } });
+}
 
 holeGo.addEventListener('click', async () => {
-  if (hole.busy || !hole.blob || !hasTarget()) return;
+  if (hole.busy || !hole.bmp || !hasTarget()) return;
+  if (!hole.seed) { showHoleError('Toque no meio do buraco (a parte vazia) para marcar o ponto.'); return; }
   const active = tablePhotos.filter(p => !p.done);
   if (!active.length) {
     showHoleError(tablePhotos.length ? 'Todas as fotos estão concluídas. Toque no selo "concluída" de uma foto para voltar a incluí-la.' : 'Ainda não há fotos das peças neste aparelho. Anexe-as (ou espere as do outro aparelho chegarem) e toque em Buscar de novo.');
@@ -1638,14 +1802,16 @@ holeGo.addEventListener('click', async () => {
   showHoleError('');
   setHoleBusy(serviceStatus.api !== 'ok' ? 'Acordando o servidor… na primeira busca do dia pode levar até 1 minuto.' : 'Medindo o buraco e comparando as bordas…');
   const cell = { ...grid.cell };
+  const crop = await holeCrop();
+  if (!crop) { setHoleBusy(''); showHoleError('O ponto marcado ficou fora da imagem mostrada. Toque no buraco dentro da imagem.'); return; }
   try {
     if (apiWakeup) await apiWakeup;
     const build = async (chunk) => {
       const fd = new FormData();
       Search.appendPhotos(fd, chunk);
-      fd.append('hole_file', hole.blob, 'hole.jpg');
-      fd.append('seed_x', String(hole.seed.x));
-      fd.append('seed_y', String(hole.seed.y));
+      fd.append('hole_file', crop.blob, 'hole.jpg');
+      fd.append('seed_x', String(crop.seed.x));
+      fd.append('seed_y', String(crop.seed.y));
       fd.append('top_k', '5');
       if (currentPuzzle.width_cm > 0) fd.append('piece_mm', String((currentPuzzle.width_cm * 10) / currentPuzzle.cols));
       return fd;

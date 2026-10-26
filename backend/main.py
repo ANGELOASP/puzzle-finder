@@ -592,6 +592,35 @@ def process_count(tables, piece_mm):
     return {"photos": summary, "total": len(pieces)}
 
 
+@app.post("/api/hole-shape")
+async def hole_shape(
+    hole_file: UploadFile = File(...),
+    seed_x: float = Form(0.5),
+    seed_y: float = Form(0.5),
+    user_id: Optional[str] = Depends(require_user),
+):
+    """Mede só o buraco (formato dos 4 lados e onde ele está na imagem): resposta na hora, sem comparar com as peças."""
+    data = await read_upload(hole_file)
+    if data is None:
+        raise HTTPException(status_code=400, detail="Envie a foto do buraco.")
+    return await run_in_threadpool(process_hole_shape, data, (seed_x, seed_y))
+
+
+def process_hole_shape(data, seed):
+    img = img_bytes_to_cv2(data, 1600)
+    try:
+        hole = local_search.segment_hole(img, seed)
+    except local_search.HoleError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+    ys, xs = np.nonzero(hole["mask"])
+    h, w = hole["mask"].shape[:2]
+    return {
+        "shapes": hole["shapes"],
+        "box": [float(xs.min()) / w, float(ys.min()) / h, float(xs.max() + 1) / w, float(ys.max() + 1) / h],
+        "preview_base64": cv2_to_base64_jpeg(local_search.draw_hole(hole), quality=80),
+    }
+
+
 @app.post("/api/local-search")
 async def local_search_endpoint(
     hole_file: UploadFile = File(...),
