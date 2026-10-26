@@ -1192,19 +1192,29 @@ function renderTablePhotos() {
       renderTablePhotos();
     });
     li.append(img, tag, del);
+    const total = Search.expected(photo);
     if (photo.done || photo.confirmed.length) {
       // Foto concluída sai das próximas buscas; tocar no selo volta a incluir (ou conclui à mão)
       const done = document.createElement('button');
       done.type = 'button';
       done.className = `photo-done${photo.done ? ' is-done' : ''}`;
-      done.textContent = photo.done ? '✓ concluída' : `${photo.confirmed.length}${photo.pieceCount ? `/${photo.pieceCount}` : ''} encaixadas`;
+      done.textContent = photo.done ? '✓ concluída' : `${photo.confirmed.length}${total ? `/${total}` : ''} encaixadas`;
       done.setAttribute('aria-pressed', String(photo.done));
       done.setAttribute('aria-label', photo.done ? `Foto ${i + 1} concluída: tocar para voltar a incluí-la nas buscas` : `Foto ${i + 1}: ${photo.confirmed.length} peças encaixadas. Tocar para marcar como concluída`);
       done.addEventListener('click', () => { photo.done = !photo.done; renderTablePhotos(); });
       li.appendChild(done);
-    } else if (photo.issues && photo.issues.length) {
+    } else if (photo.counted) {
+      // Quantas peças o app achou nesta foto (✓: o usuário conferiu)
+      const c = document.createElement('span');
+      c.className = `photo-count${photo.countOk ? ' is-ok' : ''}`;
+      c.textContent = `${photo.countOk ? '✓ ' : ''}${total} ${total === 1 ? 'peça' : 'peças'}`;
+      li.appendChild(c);
+    }
+    if (photo.issues && photo.issues.length) {
+      // Aviso da câmera (lente, luz…): fica acima do selo da contagem
       const w = document.createElement('span');
       w.className = 'photo-warn';
+      w.style.bottom = (photo.done || photo.confirmed.length || photo.counted) ? '1.55rem' : '';
       w.textContent = photo.issues.map((x) => x.short).join(' · ');
       w.title = photo.issues.map((x) => x.text).join(' ');
       li.appendChild(w);

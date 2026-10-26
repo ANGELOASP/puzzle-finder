@@ -124,6 +124,7 @@ const Workspace = (() => {
       $('locateIntro').textContent = 'As fotos mudaram. Localize de novo para incluir as peças novas.';
     }
     persist();
+    scheduleCount();
   }
 
   // Fotos que já foram localizadas (as concluídas ficam de fora)
@@ -447,6 +448,247 @@ const Workspace = (() => {
     else notify(`Nenhuma peça das fotos aponta para a nº ${Grid.cellNumber(col, row, currentPuzzle.cols)}.`, 'info');
     return true;
   }
+
+  // ---------- Contagem das peças achadas em cada foto ----------
+  // Ao anexar, o servidor separa as peças de cada foto e o app mostra quantas achou; o usuário confere com as que ele
+  // pôs na folha (um número a menos é peça que nunca será encontrada; um a mais, sombra ou resto de papel).
+  let countTimer = null;
+  const counting = { on: false, again: false };
+
+  function scheduleCount() {
+    clearTimeout(countTimer);
+    if (!currentPuzzle || !isGridPuzzle(currentPuzzle)) { renderCountRow(); return; }
+    countTimer = setTimeout(countMissing, 500);
+    renderCountRow();
+  }
+
+  async function countMissing() {
+    const todo = tablePhotos.filter((p) => !p.counted);
+    if (!todo.length) { renderCountRow(); return; }
+    if (counting.on) { counting.again = true; return; }
+    counting.on = true;
+    renderCountRow();
+    const puzzle = currentPuzzle;
+    try {
+      if (apiWakeup) await apiWakeup;
+      await Search.count(todo, {
+        pieceMm: puzzle.width_cm > 0 ? (puzzle.width_cm * 10) / puzzle.cols : null,
+        onBatch: () => renderCountRow(),
+        onPart: () => { renderTablePhotos(); renderCountRow(); persist(); },
+      });
+    } catch (err) {
+      // Sem conexão ou servidor dormindo: a contagem tenta de novo quando o usuário abrir "Conferir contagem"
+      counting.error = err.message;
+    } finally {
+      counting.on = false;
+      renderCountRow();
+      if (counting.again || tablePhotos.some((p) => !p.counted && !counting.error)) { counting.again = false; scheduleCount(); }
+    }
+  }
+
+  function countSummary() {
+    const counted = tablePhotos.filter((p) => p.counted);
+    const total = counted.reduce((n, p) => n + Search.expected(p), 0);
+    const confirmed = counted.filter((p) => p.countOk).length;
+    return { counted, total, confirmed };
+  }
+
+  function renderCountRow() {
+    const row = $('countRow');
+    if (!tablePhotos.length || !currentPuzzle || !isGridPuzzle(currentPuzzle)) { row.classList.add('hidden'); row.classList.remove('flex'); return; }
+    const { counted, total, confirmed } = countSummary();
+    const pending = tablePhotos.length - counted.length;
+    let text;
+    if (counting.on) text = `Contando as peças${counted.length ? `: ${total} em ${counted.length} ${counted.length === 1 ? 'foto' : 'fotos'} até agora` : ''}…`;
+    else if (!counted.length) text = counting.error ? 'Não consegui contar as peças agora. Toque em "Conferir contagem" para tentar de novo.' : 'Contando as peças…';
+    else {
+      text = `${total} ${total === 1 ? 'peça achada' : 'peças achadas'} em ${counted.length} ${counted.length === 1 ? 'foto' : 'fotos'}`;
+      text += confirmed === counted.length ? ' · todas conferidas ✓' : ` · ${confirmed} de ${counted.length} conferidas`;
+      if (pending) text += ` · ${pending} sem contar`;
+    }
+    $('countText').textContent = text;
+    row.classList.remove('hidden');
+    row.classList.add('flex');
+    $('btnCountOpen').textContent = counted.length && confirmed < counted.length ? 'Conferir contagem' : 'Rever contagem';
+  }
+
+  // ----- Diálogo: a foto com cada peça marcada -----
+  const cdlg = $('countDialog');
+  const cstate = { i: 0, zoom: false, bitmap: null, bitmapFor: null };
+
+  function medianArea(photo) {
+    const a = photo.boxes.map((b) => b.area).filter(Boolean).sort((x, y) => x - y);
+    return a.length ? a[Math.floor(a.length / 2)] : 0;
+  }
+
+  // Peças que fogem do tamanho normal: grandes costumam ser duas coladas; pequenas, sombra, resto de papel ou peça cortada
+  function suspects(photo) {
+    const med = medianArea(photo);
+    const out = { big: [], small: [], extra: 0 };
+    photo.boxes.forEach((b, i) => {
+      if (!med || !b.area) return;
+      if (b.area > 1.6 * med) { out.big.push(i); out.extra += Math.max(1, Math.round(b.area / med) - 1); }
+      else if (b.area < 0.45 * med) out.small.push(i);
+    });
+    return out;
+  }
+
+  async function openCount(i = 0) {
+    const counted = tablePhotos.filter((p) => p.counted);
+    if (!counted.length) {
+      // Ainda sem contagem: conta agora (com a conexão como estiver) e abre quando terminar
+      counting.error = null;
+      notify('Contando as peças das fotos…', 'info', 2500);
+      await countMissing();
+      if (!tablePhotos.some((p) => p.counted)) { notify(counting.error || 'Não consegui contar as peças.', 'error', 6000); return; }
+    }
+    cstate.i = Math.min(i, tablePhotos.length - 1);
+    cstate.zoom = false;
+    if (!cdlg.open) cdlg.showModal();
+    renderCount();
+  }
+
+  async function renderCount() {
+    const photo = tablePhotos[cstate.i];
+    if (!photo) return;
+    const n = tablePhotos.length;
+    const { confirmed, counted } = countSummary();
+    $('countKicker').textContent = `Foto ${cstate.i + 1} de ${n} · ${confirmed} de ${counted.length} conferidas`;
+    $('countPager').textContent = `${cstate.i + 1} de ${n}`;
+    $('countPrev').disabled = cstate.i === 0;
+    $('countNext').disabled = cstate.i >= n - 1;
+    $('countZoom').textContent = cstate.zoom ? 'Ver inteira' : 'Aproximar';
+    $('countZoom').setAttribute('aria-pressed', String(cstate.zoom));
+    $('countCanvas').style.width = cstate.zoom ? '220%' : '100%';
+    if (!photo.counted) {
+      $('countTitle').textContent = 'Contando…';
+      $('countSub').textContent = 'O servidor ainda não separou as peças desta foto.';
+      $('countOk').textContent = 'Aguarde';
+      $('countOk').disabled = true;
+      $('countSuspect').classList.add('hidden');
+      $('countDiff').textContent = '';
+      $('countLegend').textContent = '';
+      scheduleCount();
+      return;
+    }
+    const found = photo.pieceCount;
+    const sus = suspects(photo);
+    $('countTitle').textContent = `${found} ${found === 1 ? 'peça achada' : 'peças achadas'}`;
+    $('countSub').textContent = photo.countOk
+      ? `Conferida: ${Search.expected(photo)} ${Search.expected(photo) === 1 ? 'peça' : 'peças'} nesta folha.`
+      : 'Confira se bate com as peças que você pôs nesta folha.';
+    $('countLegend').textContent = 'Cada peça achada tem um número. Verde: normal. Âmbar: maior que o normal (pode ser duas coladas) ou muito pequena.';
+    const notes = [];
+    if (sus.big.length) notes.push(`${sus.big.length} ${sus.big.length === 1 ? 'peça maior' : 'peças maiores'} que o normal (nº ${sus.big.slice(0, 6).map((k) => k + 1).join(', ')}${sus.big.length > 6 ? '…' : ''}): podem ser peças encostadas contadas como uma só. Contando assim, seriam ~${found + sus.extra}.`);
+    if (sus.small.length) notes.push(`${sus.small.length} ${sus.small.length === 1 ? 'marca muito pequena' : 'marcas muito pequenas'} (nº ${sus.small.slice(0, 6).map((k) => k + 1).join(', ')}${sus.small.length > 6 ? '…' : ''}): confira se é peça, sombra ou resto de papel.`);
+    const box = $('countSuspect');
+    box.classList.toggle('hidden', !notes.length);
+    box.innerHTML = '';
+    notes.forEach((t) => { const p = document.createElement('p'); p.textContent = t; box.appendChild(p); });
+    const input = $('countInput');
+    input.value = photo.userCount != null ? String(photo.userCount) : '';
+    updateDiff();
+    await drawCount(photo, sus);
+  }
+
+  function updateDiff() {
+    const photo = tablePhotos[cstate.i];
+    if (!photo || !photo.counted) return;
+    const v = $('countInput').value.trim();
+    const found = photo.pieceCount;
+    const diff = $('countDiff');
+    const ok = $('countOk');
+    ok.disabled = false;
+    if (v === '') {
+      diff.textContent = '';
+      ok.textContent = `Está certo: ${found} ${found === 1 ? 'peça' : 'peças'}`;
+      return;
+    }
+    const mine = parseInt(v, 10);
+    if (!(mine >= 0)) { diff.textContent = ''; ok.disabled = true; ok.textContent = 'Digite um número'; return; }
+    if (mine === found) {
+      diff.textContent = 'Bate com o que o app achou. ✓';
+      diff.className = 'flex-1 text-sm text-emerald-300 leading-snug';
+      ok.textContent = `Está certo: ${found} ${found === 1 ? 'peça' : 'peças'}`;
+    } else if (mine > found) {
+      const d = mine - found;
+      diff.textContent = `Faltam ${d} no app: ${d === 1 ? 'uma peça não foi separada' : `${d} peças não foram separadas`} (encostadas em outra, na borda da foto ou escondidas). Afaste-as e fotografe de novo.`;
+      diff.className = 'flex-1 text-sm text-amber-300 leading-snug';
+      ok.textContent = `Usar ${mine} (a contagem do app tem ${d} a menos)`;
+    } else {
+      const d = found - mine;
+      diff.textContent = `O app achou ${d} a mais: ${d === 1 ? 'pode ser uma sombra ou resto de papel' : 'podem ser sombras ou restos de papel'}. Veja as marcas âmbar.`;
+      diff.className = 'flex-1 text-sm text-amber-300 leading-snug';
+      ok.textContent = `Usar ${mine} (o app contou ${d} a mais)`;
+    }
+  }
+
+  async function drawCount(photo, sus) {
+    const canvas = $('countCanvas');
+    let bmp = cstate.bitmapFor === photo.id ? cstate.bitmap : null;
+    if (!bmp) {
+      bmp = await createImageBitmap(photo.blob);
+      cstate.bitmap = bmp;
+      cstate.bitmapFor = photo.id;
+    }
+    if (tablePhotos[cstate.i] !== photo) return;
+    const W = Math.min(1200, bmp.width);
+    const k = W / bmp.width;
+    canvas.width = W;
+    canvas.height = Math.round(bmp.height * k);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    // As caixas vêm no quadro da foto que o servidor decodificou; o tamanho dele pode diferir um pouco do arquivo
+    const fx = photo.frame ? bmp.width / photo.frame[0] : 1;
+    const fy = photo.frame ? bmp.height / photo.frame[1] : 1;
+    const amber = new Set([...sus.big, ...sus.small]);
+    ctx.font = `bold ${Math.max(11, Math.round(W / 70))}px system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    photo.boxes.forEach((b, i) => {
+      const [x, y, w, h] = b.bbox;
+      const rx = x * fx * k, ry = y * fy * k, rw = w * fx * k, rh = h * fy * k;
+      const col = amber.has(i) ? '#fbbf24' : '#34d399';
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.85)';
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = col;
+      ctx.strokeRect(rx, ry, rw, rh);
+      const label = String(i + 1);
+      const tw = ctx.measureText(label).width + 8;
+      const th = Math.round(W / 55);
+      ctx.fillStyle = 'rgba(2, 6, 23, 0.8)';
+      ctx.fillRect(rx + rw / 2 - tw / 2, ry + rh / 2 - th / 2, tw, th);
+      ctx.fillStyle = col;
+      ctx.fillText(label, rx + rw / 2, ry + rh / 2 + 1);
+    });
+  }
+
+  function confirmCount() {
+    const photo = tablePhotos[cstate.i];
+    if (!photo || !photo.counted) return;
+    const v = $('countInput').value.trim();
+    photo.userCount = v === '' ? photo.pieceCount : Math.max(0, parseInt(v, 10) || 0);
+    photo.countOk = true;
+    renderTablePhotos();
+    renderCountRow();
+    persist();
+    if (cstate.i < tablePhotos.length - 1) { cstate.i++; cstate.zoom = false; renderCount(); }
+    else {
+      const { counted, total } = countSummary();
+      cdlg.close();
+      notify(`Contagem conferida: ${total} ${total === 1 ? 'peça' : 'peças'} em ${counted.length} ${counted.length === 1 ? 'foto' : 'fotos'}.`, 'success', 5000);
+    }
+  }
+
+  $('btnCountOpen').addEventListener('click', () => openCount(0));
+  $('countClose').addEventListener('click', () => cdlg.close());
+  $('countPrev').addEventListener('click', () => { cstate.i--; cstate.zoom = false; renderCount(); });
+  $('countNext').addEventListener('click', () => { cstate.i++; cstate.zoom = false; renderCount(); });
+  $('countZoom').addEventListener('click', () => { cstate.zoom = !cstate.zoom; renderCount(); });
+  $('countInput').addEventListener('input', updateDiff);
+  $('countOk').addEventListener('click', confirmCount);
 
   // ---------- Aprendizado: cada peça confirmada ensina a diferença de cor entre fotos e caixa ----------
   // Guarda a assinatura de cor da peça (vinda do servidor) com a célula e o giro confirmados;
@@ -858,7 +1100,8 @@ const Workspace = (() => {
     return {
       v: 1,
       savedAt: Date.now(),
-      photos: tablePhotos.map((p) => ({ id: p.id, blob: p.blob, issues: p.issues, confirmed: p.confirmed, pieceCount: p.pieceCount, done: p.done, key: p.key })),
+      photos: tablePhotos.map((p) => ({ id: p.id, blob: p.blob, issues: p.issues, confirmed: p.confirmed, pieceCount: p.pieceCount, done: p.done, key: p.key,
+        boxes: p.boxes, frame: p.frame, counted: p.counted, userCount: p.userCount, countOk: p.countOk })),
       located: state.located,
       locatedFor: state.locatedFor,
       rejected: [...state.rejected],
@@ -891,6 +1134,7 @@ const Workspace = (() => {
         tablePhotos.push({
           id: sp.id, blob: sp.blob, url: URL.createObjectURL(sp.blob), issues: sp.issues || [],
           confirmed: sp.confirmed || [], pieceCount: sp.pieceCount || 0, done: Boolean(sp.done), key: sp.key || null,
+          boxes: sp.boxes || [], frame: sp.frame || null, counted: Boolean(sp.counted), userCount: sp.userCount != null ? sp.userCount : null, countOk: Boolean(sp.countOk),
         });
       }
       state.located = saved.located || null;
@@ -905,6 +1149,7 @@ const Workspace = (() => {
       refreshAssign();
       renderLocate();
       renderMarks();
+      renderCountRow();
       const n = tablePhotos.length;
       notify(`Sessão anterior recuperada: ${n} ${n === 1 ? 'foto' : 'fotos'}${state.located ? ' e o resultado do "onde vai cada peça"' : ''}.`, 'info', 5000);
     }
