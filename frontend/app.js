@@ -336,6 +336,7 @@ function showAuthView(view, errorMessage = '') {
   show(authScreen, 'flex');
   hide(authLoading, 'flex');
   loginForm.classList.toggle('hidden', view !== 'login');
+  if (view === 'login') Collab.showInviteBanner();
   newPasswordForm.classList.toggle('hidden', view !== 'newPassword');
   const errorEl = view === 'newPassword' ? newPasswordError : loginError;
   errorEl.textContent = errorMessage;
@@ -349,7 +350,8 @@ function onSignedIn(user) {
   hide(authScreen, 'flex');
   show(appRoot);
   loginForm.reset();
-  loadPuzzlesFromSupabase();
+  // Convite por link: entra no projeto e abre direto nele
+  Collab.onSignedIn().then((id) => loadPuzzlesFromSupabase(id));
 }
 
 function onSignedOut() {
@@ -402,6 +404,22 @@ loginForm.addEventListener('submit', async (e) => {
     loginPassword.select();
   }
   // Sucesso: onAuthStateChange (SIGNED_IN) abre o app
+});
+
+// Criar conta (também pelo link de convite)
+document.getElementById('btnSignup').addEventListener('click', async () => {
+  if (!supabaseClient) return;
+  const email = loginEmail.value.trim();
+  const password = loginPassword.value;
+  if (!email || password.length < 8) {
+    showAuthView('login', 'Para criar a conta, informe um e-mail e uma senha de pelo menos 8 caracteres.');
+    return;
+  }
+  hide(loginError);
+  const { error, confirm } = await Collab.createAccount(email, password);
+  if (error) { showAuthView('login', translateAuthError(error)); return; }
+  if (confirm) showAuthView('login', 'Conta criada. Abra o e-mail que enviamos, confirme e depois entre aqui (o convite continua valendo).');
+  // Sem confirmação de e-mail: a sessão abre sozinha
 });
 
 btnTogglePassword.addEventListener('click', () => {
@@ -622,6 +640,7 @@ puzzleSelect.addEventListener('change', (e) => {
 // As fotos das peças pertencem ao quebra-cabeça aberto: ao trocar, a sessão dele fica salva no aparelho
 // (Session) e a do próximo é restaurada em Workspace.onGridMode
 function resetPhotos() {
+  Collab.stop();
   Workspace.leavePuzzle();
   tablePhotos.splice(0).forEach(p => URL.revokeObjectURL(p.url));
   renderTablePhotos();
@@ -630,6 +649,7 @@ function resetPhotos() {
 async function onPuzzleSelected(puzzle) {
   resetPhotos();
   currentPuzzle = puzzle;
+  Collab.start(puzzle);
   exitGridMode();
   show(puzzleProgressContainer);
   puzzleProgressName.textContent = puzzle.name;
@@ -1170,6 +1190,7 @@ btnClearTablePhotos.addEventListener('click', () => {
 });
 
 function renderTablePhotos() {
+  if (typeof Collab !== 'undefined') Collab.touch(); // fotos novas ou removidas vão para os outros aparelhos
   tablePhotosList.innerHTML = '';
   tablePhotos.forEach((photo, i) => {
     const li = document.createElement('li');
@@ -1879,6 +1900,17 @@ for (const el of [cellColInput, cellRowInput]) {
   el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); onColRowInput(); el.blur(); } });
 }
 
+// Mapa atualizado por outro participante (ou pelo servidor): redesenha sem mexer no resto
+async function applyRemoteScanMap(map) {
+  if (!currentPuzzle || !grid.scanMap || map === grid.scanMap) return;
+  grid.scanMap = map;
+  currentPuzzle.scan_map = map;
+  updateGridCounts();
+  await renderMapImage();
+  if (grid.cell) selectCell(grid.cell.col, grid.cell.row);
+  Workspace.remoteChanged();
+}
+
 async function persistScanMap() {
   const { error } = await supabaseClient.from('puzzles')
     .update({ scan_map: grid.scanMap, scanned_at: new Date().toISOString() })
@@ -1897,7 +1929,10 @@ async function setCellState(cell, value) {
   await renderMapImage();
   if (grid.cell && grid.cell.col === cell.col && grid.cell.row === cell.row) selectCell(cell.col, cell.row);
   try {
-    await persistScanMap();
+    // Só esta célula muda no banco: marcações de outras pessoas ao mesmo tempo não se perdem
+    const { data, error } = await supabaseClient.rpc('set_cell', { p_puzzle: p.id, p_index: cell.row * p.cols + cell.col, p_value: value });
+    if (error) await persistScanMap();
+    else if (data) { currentPuzzle.scan_map = data; if (data !== grid.scanMap) await applyRemoteScanMap(data); }
   } catch (err) {
     notify(`Mapa atualizado só neste aparelho: ${err.message}`, 'error');
   }

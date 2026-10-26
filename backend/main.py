@@ -1,4 +1,4 @@
-import base64, gc, hashlib, json, os, threading, time, urllib.error, urllib.request
+import base64, contextvars, gc, hashlib, json, os, threading, time, urllib.error, urllib.request
 import cv2, numpy as np
 from typing import List, Optional
 from fastapi import Depends, FastAPI, UploadFile, File, Form, Header, HTTPException
@@ -32,18 +32,73 @@ def release_memory():
         pass  # fora do Linux/glibc: segue sem
 
 
-def heavy(fn):
-    """Roda a análise e libera a memória no fim, mesmo se der erro."""
-    def run(*args, **kwargs):
+class JobQueue:
+    """
+    Fila das análises pesadas. O plano gratuito tem pouca memória: várias pessoas buscando ao mesmo tempo não podem
+    rodar juntas. Cada análise espera a sua vez (ordem de chegada) e o app mostra a posição (GET /api/queue/{id}).
+    """
+
+    def __init__(self, slots):
+        self.slots = max(1, slots)
+        self.cond = threading.Condition()
+        self.waiting = []   # [(ticket, request_id)] na ordem de chegada
+        self.running = []
+
+    def run(self, rid, fn):
+        ticket = object()
+        with self.cond:
+            self.waiting.append((ticket, rid))
+            self.cond.wait_for(lambda: self.waiting[0][0] is ticket and len(self.running) < self.slots)
+            self.waiting.pop(0)
+            self.running.append((ticket, rid))
+            self.cond.notify_all()
         try:
-            return fn(*args, **kwargs)
+            return fn()
         finally:
-            release_memory()
+            with self.cond:
+                self.running = [t for t in self.running if t[0] is not ticket]
+                self.cond.notify_all()
+
+    def status(self, rid):
+        with self.cond:
+            ids = [r for _, r in self.waiting]
+            if rid in ids:
+                ahead = ids.index(rid) + len(self.running)
+                return {"state": "waiting", "ahead": ahead, "waiting": len(ids), "running": len(self.running)}
+            running = any(r == rid for _, r in self.running)
+            return {"state": "running" if running else "unknown", "ahead": 0, "waiting": len(ids), "running": len(self.running)}
+
+
+JOB_QUEUE = JobQueue(int(os.environ.get("JOB_SLOTS", "1")))
+request_id_var = contextvars.ContextVar("request_id", default=None)
+
+
+def heavy(fn):
+    """Roda a análise na fila (uma por vez) e libera a memória no fim, mesmo se der erro."""
+    def run(*args, **kwargs):
+        def job():
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                release_memory()
+        return JOB_QUEUE.run(request_id_var.get(), job)
     run.__name__ = fn.__name__
     return run
 
 
 app = FastAPI(title="PuzzleFinder API")
+
+
+@app.middleware("http")
+async def remember_request_id(request, call_next):
+    # O app manda um id por pedido para perguntar a posição na fila enquanto espera
+    request_id_var.set(request.headers.get("x-request-id"))
+    return await call_next(request)
+
+
+@app.get("/api/queue/{request_id}")
+async def queue_status(request_id: str):
+    return JOB_QUEUE.status(request_id)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
